@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f3ea" />
+    <title>Calorie Lens</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="camera-panel" aria-label="拍照估算卡路里">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Calorie Lens</p>
+            <h1>拍一下，估算这一盘</h1>
+          </div>
+          <button class="icon-button" id="resetBtn" type="button" title="重置">
+            <span aria-hidden="true">↻</span>
+          </button>
+        </header>
+
+        <div class="viewfinder" id="viewfinder">
+          <video id="camera" autoplay playsinline muted></video>
+          <img id="photoPreview" alt="已拍摄的食物照片" />
+          <canvas id="snapshotCanvas"></canvas>
+          <div class="guide food-guide">
+            <span>食物放这里</span>
+          </div>
+          <div class="guide fist-guide">
+            <span>拳头参照</span>
+          </div>
+          <div class="overlay-layer" id="overlayLayer"></div>
+          <div class="empty-state" id="emptyState">
+            <strong>把盘子放进大框</strong>
+            <span>如果份量不确定，把拳头放在右下角小框里。</span>
+          </div>
+        </div>
+
+        <div class="capture-actions">
+          <button class="secondary-button" id="cameraBtn" type="button">打开相机</button>
+          <label class="secondary-button file-label">
+            上传照片
+            <input id="fileInput" type="file" accept="image/*" capture="environment" />
+          </label>
+          <button class="primary-button" id="captureBtn" type="button" disabled>拍照</button>
+        </div>
+      </section>
+
+      <section class="analysis-panel" aria-label="卡路里估算结果">
+        <div class="summary-strip">
+          <div>
+            <span>总热量</span>
+            <strong id="totalCalories">0 kcal</strong>
+          </div>
+          <div>
+            <span>总重量</span>
+            <strong id="totalGrams">0 g</strong>
+          </div>
+          <div>
+            <span>置信度</span>
+            <strong id="confidence">等待照片</strong>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <button class="primary-button" id="analyzeBtn" type="button" disabled>分析照片</button>
+          <button class="secondary-button" id="addFoodBtn" type="button">添加食物</button>
+          <button class="secondary-button" id="saveMealBtn" type="button" disabled>保存记录</button>
+        </div>
+
+        <div class="reference-card">
+          <div>
+            <h2>拳头参照</h2>
+            <p>默认成人拳头约 350 ml。拖动滑块校准后，所有体积估算会一起更新。</p>
+          </div>
+          <label>
+            <span id="fistVolumeLabel">350 ml</span>
+            <input id="fistVolume" type="range" min="250" max="520" value="350" step="10" />
+          </label>
+        </div>
+
+        <div class="food-list" id="foodList"></div>
+
+        <section class="history-panel" aria-label="历史记录">
+          <div class="section-heading">
+            <h2>最近记录</h2>
+            <button class="text-button" id="clearHistoryBtn" type="button">清空</button>
+          </div>
+          <div class="history-list" id="historyList"></div>
+        </section>
+      </section>
+    </main>
+
+    <template id="foodItemTemplate">
+      <article class="food-item">
+        <div class="food-marker"></div>
+        <div class="food-main">
+          <label>
+            食物
+            <select class="food-select"></select>
+          </label>
+          <label>
+            估计重量
+            <div class="number-field">
+              <input class="grams-input" type="number" min="1" step="1" />
+              <span>g</span>
+            </div>
+          </label>
+          <label>
+            热量密度
+            <div class="number-field">
+              <input class="kcal-input" type="number" min="1" step="1" />
+              <span>kcal/100g</span>
+            </div>
+          </label>
+        </div>
+        <div class="food-meta">
+          <strong class="calories-output">0 kcal</strong>
+          <span class="density-output">0 kcal/100g</span>
+          <button class="icon-button delete-food" type="button" title="删除">×</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
