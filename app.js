@@ -13,11 +13,15 @@ const foodLibrary = [
 
 const colors = ["#287a63", "#c46b2f", "#466ca6", "#bf4f5f", "#6d6a2e", "#6c58a8"];
 const historyKey = "calorie-lens-history";
+const clientIdKey = "calorie-lens-client-id";
+const maxImageSide = 1280;
+const jpegQuality = 0.82;
 
 const state = {
   stream: null,
   hasPhoto: false,
   photoDataUrl: "",
+  clientId: loadClientId(),
   fistVolumeMl: 350,
   foods: [],
   history: loadHistory()
@@ -47,6 +51,15 @@ const els = {
   historyList: document.querySelector("#historyList")
 };
 
+function loadClientId() {
+  let clientId = localStorage.getItem(clientIdKey);
+  if (!clientId) {
+    clientId = crypto.randomUUID();
+    localStorage.setItem(clientIdKey, clientId);
+  }
+  return clientId;
+}
+
 function loadHistory() {
   try {
     return JSON.parse(localStorage.getItem(historyKey)) || [];
@@ -57,6 +70,28 @@ function loadHistory() {
 
 function saveHistory() {
   localStorage.setItem(historyKey, JSON.stringify(state.history.slice(0, 8)));
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("图片读取失败。"));
+    image.src = src;
+  });
+}
+
+async function compressImageDataUrl(src) {
+  const image = await loadImage(src);
+  const scale = Math.min(1, maxImageSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/jpeg", jpegQuality);
 }
 
 function formatCalories(grams, kcalPer100g) {
@@ -114,7 +149,8 @@ async function analyzePlate() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         imageDataUrl: state.photoDataUrl,
-        fistVolumeMl: state.fistVolumeMl
+        fistVolumeMl: state.fistVolumeMl,
+        clientId: state.clientId
       })
     });
     const result = await response.json();
@@ -138,7 +174,7 @@ async function analyzePlate() {
   } catch (error) {
     mockAnalyzePlate();
     els.confidence.textContent = "模拟结果";
-    alert(`${error.message}\n\n已先使用本地模拟结果。配置 OPENAI_API_KEY 后可以启用真实图片识别。`);
+    alert(`${error.message}\n\n已先使用本地模拟结果。配置 GEMINI_API_KEY 后可以启用真实图片识别。`);
   } finally {
     els.analyzeBtn.disabled = !state.hasPhoto;
     els.analyzeBtn.textContent = "分析照片";
@@ -333,10 +369,11 @@ async function startCamera() {
   els.emptyState.style.display = "none";
 }
 
-function setPhoto(src) {
+async function setPhoto(src) {
+  const compressedSrc = await compressImageDataUrl(src);
   state.hasPhoto = true;
-  state.photoDataUrl = src;
-  els.photoPreview.src = src;
+  state.photoDataUrl = compressedSrc;
+  els.photoPreview.src = compressedSrc;
   els.photoPreview.style.display = "block";
   els.camera.style.display = "none";
   els.analyzeBtn.disabled = false;
@@ -351,7 +388,7 @@ function capturePhoto() {
   canvas.width = width;
   canvas.height = height;
   canvas.getContext("2d").drawImage(video, 0, 0, width, height);
-  setPhoto(canvas.toDataURL("image/jpeg", 0.92));
+  setPhoto(canvas.toDataURL("image/jpeg", 0.92)).catch((error) => alert(error.message));
 }
 
 function addManualFood() {
@@ -423,7 +460,9 @@ els.fileInput.addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.addEventListener("load", () => setPhoto(String(reader.result || "")));
+  reader.addEventListener("load", () => {
+    setPhoto(String(reader.result || "")).catch((error) => alert(error.message));
+  });
   reader.readAsDataURL(file);
 });
 
