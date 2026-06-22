@@ -16,7 +16,21 @@ http://127.0.0.1:4173
 
 ## 启用真实图片识别
 
-先设置 OpenAI API Key，再启动服务：
+推荐复制 `.env.example` 为 `.env`，然后把 `OPENAI_API_KEY` 改成你的真实 Key：
+
+```text
+OPENAI_API_KEY=sk-your-api-key-here
+OPENAI_MODEL=gpt-4.1-mini
+PORT=4173
+```
+
+然后启动服务：
+
+```bash
+node server.js
+```
+
+也可以用 PowerShell 临时设置：
 
 ```powershell
 $env:OPENAI_API_KEY="你的 API Key"
@@ -31,6 +45,8 @@ node server.js
 ```
 
 未设置 `OPENAI_API_KEY` 时，App 会保留本地模拟识别和手动校正流程。
+
+`.env` 和 `.env.local` 已加入 `.gitignore`，不会上传到 GitHub。
 
 ## 当前功能
 
