@@ -168,6 +168,34 @@ function analysisSchema({ strict }) {
   };
 }
 
+function geminiAnalysisSchema() {
+  return {
+    type: "OBJECT",
+    required: ["foods", "overallConfidence", "usedFistReference", "message"],
+    properties: {
+      foods: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          required: ["name", "grams", "kcalPer100g", "confidence", "left", "top", "notes"],
+          properties: {
+            name: { type: "STRING" },
+            grams: { type: "NUMBER" },
+            kcalPer100g: { type: "NUMBER" },
+            confidence: { type: "NUMBER" },
+            left: { type: "NUMBER" },
+            top: { type: "NUMBER" },
+            notes: { type: "STRING" }
+          }
+        }
+      },
+      overallConfidence: { type: "NUMBER" },
+      usedFistReference: { type: "BOOLEAN" },
+      message: { type: "STRING" }
+    }
+  };
+}
+
 function analysisPrompt(fistVolumeMl) {
   return [
     "你是营养识别助手。请分析照片中的一盘食物。",
@@ -303,23 +331,32 @@ async function analyzeWithGemini(body, fistVolumeMl) {
     throw Object.assign(new Error("图片格式不正确。"), { status: 400 });
   }
 
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+  const modelPath = geminiModel.startsWith("models/") ? geminiModel : `models/${geminiModel}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`;
+
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      "x-goog-api-key": geminiKey,
-      "content-type": "application/json",
-      "Api-Revision": "2026-05-20"
+      "content-type": "application/json"
     },
     body: JSON.stringify({
-      model: geminiModel,
-      input: [
-        { type: "text", text: analysisPrompt(fistVolumeMl) },
-        { type: "image", data: image.data, mime_type: image.mimeType }
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: analysisPrompt(fistVolumeMl) },
+            {
+              inline_data: {
+                mime_type: image.mimeType,
+                data: image.data
+              }
+            }
+          ]
+        }
       ],
-      response_format: {
-        type: "text",
-        mime_type: "application/json",
-        schema: analysisSchema({ strict: false })
+      generation_config: {
+        response_mime_type: "application/json",
+        response_schema: geminiAnalysisSchema()
       }
     })
   });
