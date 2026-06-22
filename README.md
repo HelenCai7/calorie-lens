@@ -16,12 +16,22 @@ http://127.0.0.1:4173
 
 ## 启用真实图片识别
 
-推荐复制 `.env.example` 为 `.env`，然后把 `OPENAI_API_KEY` 改成你的真实 Key：
+推荐复制 `.env.example` 为 `.env`，然后把 `GEMINI_API_KEY` 改成你的真实 Key：
 
 ```text
-OPENAI_API_KEY=sk-your-api-key-here
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your-gemini-api-key-here
+GEMINI_MODEL=gemini-2.5-flash
+DAILY_ANALYSIS_LIMIT=3
+OPENAI_API_KEY=sk-your-openai-api-key-here
 OPENAI_MODEL=gpt-4.1-mini
 PORT=4173
+```
+
+Gemini API Key 获取地址：
+
+```text
+https://aistudio.google.com/app/apikey
 ```
 
 然后启动服务：
@@ -33,18 +43,19 @@ node server.js
 也可以用 PowerShell 临时设置：
 
 ```powershell
-$env:OPENAI_API_KEY="你的 API Key"
+$env:AI_PROVIDER="gemini"
+$env:GEMINI_API_KEY="你的 Gemini API Key"
 node server.js
 ```
 
 可选：指定模型。
 
 ```powershell
-$env:OPENAI_MODEL="gpt-4.1-mini"
+$env:GEMINI_MODEL="gemini-2.5-flash"
 node server.js
 ```
 
-未设置 `OPENAI_API_KEY` 时，App 会保留本地模拟识别和手动校正流程。
+未设置 `GEMINI_API_KEY` 时，App 会保留本地模拟识别和手动校正流程。也可以把 `AI_PROVIDER` 改成 `openai`，继续使用 OpenAI 作为备用。
 
 `.env` 和 `.env.local` 已加入 `.gitignore`，不会上传到 GitHub。
 
@@ -59,10 +70,12 @@ node server.js
 - 可以拖动照片上的食物标注位置。
 - 可以调整拳头参考体积，整体重量估算会同步校准。
 - 可以保存本次记录，并在最近记录里查看。
+- 同一个本机用户 24 小时内最多调用 3 次图片分析。
+- 上传或拍照后会先把高清图片压缩到普通手机分析尺寸，再调用模型。
 
 ## 后续接入真实识别
 
-现在 `server.js` 里的 `/api/analyze` 会在配置 `OPENAI_API_KEY` 后调用视觉模型；`app.js` 里的 `mockAnalyzePlate()` 只作为未配置 API Key 或识别失败时的回退。
+现在 `server.js` 里的 `/api/analyze` 默认会在配置 `GEMINI_API_KEY` 后调用 Gemini 视觉模型；`app.js` 里的 `mockAnalyzePlate()` 只作为未配置 API Key 或识别失败时的回退。
 
 - OpenAI Vision 或其他视觉模型：识别食物种类、分割盘中物体、判断拳头参照比例。
 - 后端营养数据库：根据食物名称返回更精确的 `kcalPer100g`。
