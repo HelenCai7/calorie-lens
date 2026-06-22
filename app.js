@@ -17,6 +17,7 @@ const historyKey = "calorie-lens-history";
 const state = {
   stream: null,
   hasPhoto: false,
+  photoDataUrl: "",
   fistVolumeMl: 350,
   foods: [],
   history: loadHistory()
@@ -77,6 +78,12 @@ function buildFoodEstimate(food, volumeShare, position) {
   };
 }
 
+function confidenceLabel(value) {
+  if (value >= 0.72) return "较高";
+  if (value >= 0.46) return "中等";
+  return "较低";
+}
+
 function mockAnalyzePlate() {
   const picks = [foodLibrary[0], foodLibrary[1], foodLibrary[3]];
   const shares = [0.72, 0.58, 0.42];
@@ -89,6 +96,53 @@ function mockAnalyzePlate() {
   state.foods = picks.map((food, index) => buildFoodEstimate(food, shares[index], positions[index]));
   els.confidence.textContent = "中等";
   render();
+}
+
+async function analyzePlate() {
+  if (!state.photoDataUrl) {
+    alert("请先拍照或上传照片。");
+    return;
+  }
+
+  els.analyzeBtn.disabled = true;
+  els.analyzeBtn.textContent = "识别中...";
+  els.confidence.textContent = "识别中";
+
+  try {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        imageDataUrl: state.photoDataUrl,
+        fistVolumeMl: state.fistVolumeMl
+      })
+    });
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "图片识别失败。");
+    }
+
+    state.foods = result.foods.map((food) => ({
+      id: crypto.randomUUID(),
+      name: food.name,
+      kcalPer100g: food.kcalPer100g,
+      grams: food.grams,
+      confidence: food.confidence,
+      notes: food.notes,
+      position: food.position
+    }));
+
+    els.confidence.textContent = confidenceLabel(result.overallConfidence);
+    render();
+  } catch (error) {
+    mockAnalyzePlate();
+    els.confidence.textContent = "模拟结果";
+    alert(`${error.message}\n\n已先使用本地模拟结果。配置 OPENAI_API_KEY 后可以启用真实图片识别。`);
+  } finally {
+    els.analyzeBtn.disabled = !state.hasPhoto;
+    els.analyzeBtn.textContent = "分析照片";
+  }
 }
 
 function renderOverlay() {
@@ -281,6 +335,7 @@ async function startCamera() {
 
 function setPhoto(src) {
   state.hasPhoto = true;
+  state.photoDataUrl = src;
   els.photoPreview.src = src;
   els.photoPreview.style.display = "block";
   els.camera.style.display = "none";
@@ -347,6 +402,7 @@ function saveMeal() {
 function resetApp() {
   state.foods = [];
   state.hasPhoto = false;
+  state.photoDataUrl = "";
   els.photoPreview.removeAttribute("src");
   els.photoPreview.style.display = "none";
   els.analyzeBtn.disabled = true;
@@ -366,10 +422,12 @@ els.captureBtn.addEventListener("click", capturePhoto);
 els.fileInput.addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
-  setPhoto(URL.createObjectURL(file));
+  const reader = new FileReader();
+  reader.addEventListener("load", () => setPhoto(String(reader.result || "")));
+  reader.readAsDataURL(file);
 });
 
-els.analyzeBtn.addEventListener("click", mockAnalyzePlate);
+els.analyzeBtn.addEventListener("click", analyzePlate);
 els.addFoodBtn.addEventListener("click", addManualFood);
 els.saveMealBtn.addEventListener("click", saveMeal);
 els.clearHistoryBtn.addEventListener("click", () => {
