@@ -72,6 +72,16 @@ function saveHistory() {
   localStorage.setItem(historyKey, JSON.stringify(state.history.slice(0, 8)));
 }
 
+function clearAnalysisForNewPhoto(statusText) {
+  state.foods = [];
+  state.photoDataUrl = "";
+  els.confidence.textContent = statusText;
+  renderTotals();
+  renderOverlay();
+  renderFoodList();
+  els.confidence.textContent = statusText;
+}
+
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -357,6 +367,12 @@ async function startCamera() {
     state.stream.getTracks().forEach((track) => track.stop());
   }
 
+  state.hasPhoto = false;
+  clearAnalysisForNewPhoto("等待拍照");
+  els.photoPreview.removeAttribute("src");
+  els.photoPreview.style.display = "none";
+  els.analyzeBtn.disabled = true;
+
   state.stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "environment" },
     audio: false
@@ -364,20 +380,22 @@ async function startCamera() {
 
   els.camera.srcObject = state.stream;
   els.camera.style.display = "block";
-  els.photoPreview.style.display = "none";
   els.captureBtn.disabled = false;
   els.emptyState.style.display = "none";
 }
 
 async function setPhoto(src) {
-  const compressedSrc = await compressImageDataUrl(src);
   state.hasPhoto = true;
+  clearAnalysisForNewPhoto("处理图片");
+  els.analyzeBtn.disabled = true;
+  const compressedSrc = await compressImageDataUrl(src);
   state.photoDataUrl = compressedSrc;
   els.photoPreview.src = compressedSrc;
   els.photoPreview.style.display = "block";
   els.camera.style.display = "none";
   els.analyzeBtn.disabled = false;
   els.emptyState.style.display = "none";
+  els.confidence.textContent = "等待分析";
 }
 
 function capturePhoto() {
