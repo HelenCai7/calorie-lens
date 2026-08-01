@@ -22,6 +22,8 @@ http://127.0.0.1:4173
 AI_PROVIDER=gemini
 GEMINI_API_KEY=your-gemini-api-key-here
 GEMINI_MODEL=gemini-2.5-flash
+USDA_API_KEY=your-usda-api-key
+USDA_CACHE_TTL_DAYS=30
 DAILY_ANALYSIS_LIMIT=3
 OPENAI_API_KEY=sk-your-openai-api-key-here
 OPENAI_MODEL=gpt-4.1-mini
@@ -32,6 +34,12 @@ Gemini API Key 获取地址：
 
 ```text
 https://aistudio.google.com/app/apikey
+```
+
+USDA FoodData Central API Key 获取地址：
+
+```text
+https://fdc.nal.usda.gov/api-key-signup/
 ```
 
 然后启动服务：
@@ -65,6 +73,8 @@ node server.js
 - 取景框中预留食物位置和拳头参照位置。
 - 点击“分析照片”后生成盘中食物的估算标注。
 - 每个食物单独显示重量和卡路里。
+- Gemini 负责识别食物和重量，USDA FoodData Central 负责校准 `kcal/100g`，界面显示营养数据来源。
+- USDA 查询结果持久保存到本地缓存，默认 30 天内不重复请求；过期刷新失败时继续使用旧缓存。
 - 可以手动添加、删除食物。
 - 可以调整每个食物的克重和 `kcal/100g`，卡路里和图片标注会即时更新。
 - 可以拖动照片上的食物标注位置。
@@ -73,10 +83,10 @@ node server.js
 - 同一个本机用户 24 小时内最多调用 3 次图片分析。
 - 上传或拍照后会先把高清图片压缩到普通手机分析尺寸，再调用模型。
 
-## 后续接入真实识别
+## 识别与营养数据
 
 现在 `server.js` 里的 `/api/analyze` 默认会在配置 `GEMINI_API_KEY` 后调用 Gemini 视觉模型；`app.js` 里的 `mockAnalyzePlate()` 只作为未配置 API Key 或识别失败时的回退。
 
 - OpenAI Vision 或其他视觉模型：识别食物种类、分割盘中物体、判断拳头参照比例。
-- 后端营养数据库：根据食物名称返回更精确的 `kcalPer100g`。
+- USDA FoodData Central：根据模型生成的英文标准食物名返回更可靠的 `kcalPer100g`；无法匹配时保留模型估算。
 - 分割模型：返回每个食物的边界框或 mask，再映射到页面上的标注位置。

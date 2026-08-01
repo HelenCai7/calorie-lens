@@ -38,6 +38,13 @@ const port = Number(process.env.PORT || 4173);
 const aiProvider = (process.env.AI_PROVIDER || "gemini").toLowerCase();
 const openaiModel = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const geminiModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const usdaApiKey = process.env.USDA_API_KEY || "";
+const usdaApiBase = "https://api.nal.usda.gov/fdc/v1";
+const usdaCacheTtlDays = Math.max(1, Number(process.env.USDA_CACHE_TTL_DAYS) || 30);
+const usdaCacheTtlMs = usdaCacheTtlDays * 24 * 60 * 60 * 1000;
+const nutritionCacheFile = path.join(root, ".nutrition-cache.json");
+const usdaCache = loadNutritionCache();
+const usdaInflight = new Map();
 const dailyAnalysisLimit = Number(process.env.DAILY_ANALYSIS_LIMIT || 3);
 const rateWindowMs = 24 * 60 * 60 * 1000;
 const usageFile = path.join(root, ".analysis-usage.json");
@@ -70,6 +77,28 @@ function loadAnalysisUsage() {
 function saveAnalysisUsage() {
   const data = Object.fromEntries(analysisUsage.entries());
   fs.writeFile(usageFile, JSON.stringify(data, null, 2), () => {});
+}
+
+function loadNutritionCache() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(nutritionCacheFile, "utf8"));
+    return new Map(
+      Object.entries(raw).filter(
+        ([, entry]) =>
+          entry &&
+          typeof entry === "object" &&
+          Number.isFinite(Number(entry.cachedAt)) &&
+          Object.prototype.hasOwnProperty.call(entry, "value")
+      )
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function saveNutritionCache() {
+  const data = Object.fromEntries(usdaCache.entries());
+  fs.writeFile(nutritionCacheFile, JSON.stringify(data, null, 2), () => {});
 }
 
 function readJsonBody(req) {
@@ -149,9 +178,10 @@ function analysisSchema({ strict }) {
         items: {
           type: "object",
           ...objectBase,
-          required: ["name", "grams", "kcalPer100g", "confidence", "left", "top", "notes"],
+          required: ["name", "usdaQuery", "grams", "kcalPer100g", "confidence", "left", "top", "notes"],
           properties: {
             name: { type: "string" },
+            usdaQuery: { type: "string" },
             grams: { type: "number" },
             kcalPer100g: { type: "number" },
             confidence: { type: "number" },
@@ -177,9 +207,10 @@ function geminiAnalysisSchema() {
         type: "ARRAY",
         items: {
           type: "OBJECT",
-          required: ["name", "grams", "kcalPer100g", "confidence", "left", "top", "notes"],
+          required: ["name", "usdaQuery", "grams", "kcalPer100g", "confidence", "left", "top", "notes"],
           properties: {
             name: { type: "STRING" },
+            usdaQuery: { type: "STRING" },
             grams: { type: "NUMBER" },
             kcalPer100g: { type: "NUMBER" },
             confidence: { type: "NUMBER" },
@@ -203,6 +234,7 @@ function analysisPrompt(fistVolumeMl) {
     `如果画面里有拳头，把它当作体积参照；用户设置的拳头体积约为 ${fistVolumeMl} ml。`,
     "请尽量识别盘子中每个独立食物，不要把米饭、肉、蔬菜混成一个条目。",
     "估算每项食物的克重、每100g热量、置信度，以及标注在图片中的位置。",
+    "每项食物还要返回 usdaQuery：用于 USDA FoodData Central 搜索的简短英文标准名称，必须包含生熟状态和主要烹饪方式，例如 cooked white rice 或 grilled chicken breast。",
     "left/top 是标注左上角相对图片区域的百分比，范围 2 到 88。",
     "如果无法确定，请给出较低 confidence，并在 notes 说明需要用户手动调整。"
   ].join("\n");
@@ -219,6 +251,7 @@ function clampFood(food, index) {
 
   return {
     name: String(food.name || "未知食物").slice(0, 24),
+    usdaQuery: String(food.usdaQuery || food.name || "").slice(0, 80),
     grams: Math.max(1, Math.round(Number(food.grams) || 100)),
     kcalPer100g: Math.max(1, Math.round(Number(food.kcalPer100g) || 120)),
     confidence: Math.min(1, Math.max(0, Number(food.confidence) || 0.45)),
@@ -228,6 +261,137 @@ function clampFood(food, index) {
     },
     notes: String(food.notes || "").slice(0, 80)
   };
+}
+
+function foodEnergyKcal(food) {
+  const priorities = new Map([
+    ["2048", 0],
+    ["2047", 1],
+    ["1008", 2]
+  ]);
+
+  const matches = (food.foodNutrients || [])
+    .map((item) => {
+      const nutrientId = String(item.nutrientId ?? item.nutrient?.id ?? "");
+      const unit = String(item.unitName ?? item.nutrient?.unitName ?? "").toUpperCase();
+      const value = Number(item.value ?? item.amount);
+      return { nutrientId, unit, value, priority: priorities.get(nutrientId) };
+    })
+    .filter(
+      (item) =>
+        item.priority !== undefined &&
+        item.unit === "KCAL" &&
+        Number.isFinite(item.value) &&
+        item.value > 0
+    )
+    .sort((a, b) => a.priority - b.priority);
+
+  return matches.length ? Math.round(matches[0].value) : null;
+}
+
+function usdaCandidateScore(food, query, index) {
+  const description = String(food.description || "").toLowerCase();
+  const queryWords = String(query || "")
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) || [];
+  const matchedWords = queryWords.filter((word) => description.includes(word)).length;
+  const typeBonus = {
+    Foundation: 10,
+    "SR Legacy": 8,
+    "Survey (FNDDS)": 6,
+    Branded: -8
+  }[food.dataType] || 0;
+
+  return matchedWords * 12 + typeBonus - index;
+}
+
+async function lookupUsdaFood(query) {
+  if (!configuredSecret(usdaApiKey, "your-usda-api-key")) return null;
+
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  if (!normalizedQuery) return null;
+  const cached = usdaCache.get(normalizedQuery);
+  if (cached && Date.now() - Number(cached.cachedAt) < usdaCacheTtlMs) {
+    return cached.value;
+  }
+  if (usdaInflight.has(normalizedQuery)) return usdaInflight.get(normalizedQuery);
+
+  const lookup = (async () => {
+    const response = await fetch(
+      `${usdaApiBase}/foods/search?api_key=${encodeURIComponent(usdaApiKey)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: normalizedQuery,
+          pageSize: 12,
+          dataType: ["Foundation", "SR Legacy", "Survey (FNDDS)"]
+        })
+      }
+    );
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error?.message || payload.message || `USDA HTTP ${response.status}`);
+    }
+
+    const candidates = (payload.foods || [])
+      .map((food, index) => ({
+        food,
+        index,
+        kcalPer100g: foodEnergyKcal(food),
+        score: usdaCandidateScore(food, normalizedQuery, index)
+      }))
+      .filter((candidate) => candidate.kcalPer100g)
+      .sort((a, b) => b.score - a.score);
+
+    if (!candidates.length) return null;
+    const best = candidates[0];
+    return {
+      kcalPer100g: best.kcalPer100g,
+      fdcId: best.food.fdcId,
+      matchedFood: String(best.food.description || "").slice(0, 120),
+      dataType: String(best.food.dataType || "")
+    };
+  })();
+
+  usdaInflight.set(normalizedQuery, lookup);
+  try {
+    const value = await lookup;
+    usdaCache.set(normalizedQuery, { cachedAt: Date.now(), value });
+    saveNutritionCache();
+    return value;
+  } catch (error) {
+    if (cached) return cached.value;
+    throw error;
+  } finally {
+    usdaInflight.delete(normalizedQuery);
+  }
+}
+
+async function enrichFoodsWithUsda(foods) {
+  return Promise.all(
+    foods.map(async (food) => {
+      try {
+        const match = await lookupUsdaFood(food.usdaQuery || food.name);
+        if (!match) {
+          return { ...food, nutritionSource: "gemini", matchedFood: "", fdcId: null };
+        }
+
+        return {
+          ...food,
+          kcalPer100g: match.kcalPer100g,
+          nutritionSource: "usda",
+          nutritionDataType: match.dataType,
+          matchedFood: match.matchedFood,
+          fdcId: match.fdcId
+        };
+      } catch (error) {
+        console.warn(`USDA lookup failed for ${food.usdaQuery || food.name}: ${error.message}`);
+        return { ...food, nutritionSource: "gemini", matchedFood: "", fdcId: null };
+      }
+    })
+  );
 }
 
 function usageForClient(clientId) {
@@ -398,15 +562,19 @@ async function analyzePhoto(req, res) {
       aiProvider === "openai"
         ? await analyzeWithOpenAI(body, fistVolumeMl)
         : await analyzeWithGemini(body, fistVolumeMl);
+    const foods = await enrichFoodsWithUsda((parsed.foods || []).map(clampFood));
     const remaining = recordAnalysis(limitCheck);
 
     sendJson(res, 200, {
-      foods: (parsed.foods || []).map(clampFood),
+      foods,
       overallConfidence: Math.min(1, Math.max(0, Number(parsed.overallConfidence) || 0.5)),
       usedFistReference: Boolean(parsed.usedFistReference),
       message: String(parsed.message || ""),
       provider: aiProvider,
       model: aiProvider === "openai" ? openaiModel : geminiModel,
+      nutritionDatabase: configuredSecret(usdaApiKey, "your-usda-api-key")
+        ? "USDA FoodData Central"
+        : "model estimate",
       remaining
     });
   } catch (error) {
@@ -447,4 +615,8 @@ http
   .listen(port, "127.0.0.1", () => {
     console.log(`http://127.0.0.1:${port}`);
     console.log(`AI provider: ${aiProvider}`);
+    console.log(
+      `Nutrition database: ${configuredSecret(usdaApiKey, "your-usda-api-key") ? "USDA FoodData Central" : "model estimate"}`
+    );
+    console.log(`USDA cache: ${usdaCache.size} entries, ${usdaCacheTtlDays} day TTL`);
   });

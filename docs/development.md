@@ -295,7 +295,11 @@ OpenAI 通道主要用于：
 
 - 加入更多中文食物名称映射。
 - 根据地区饮食习惯切换 prompt。
-- 将模型识别食物名映射到营养数据库标准名。
+- 使用模型返回的 `usdaQuery` 英文标准名搜索 USDA FoodData Central。
+- 优先匹配 Foundation、SR Legacy 和 FNDDS，并读取能量营养素 `2048`、`2047` 或 `1008`。
+- USDA 无匹配或暂时不可用时保留模型估算，避免整次分析失败。
+- 查询结果写入 `.nutrition-cache.json`，默认缓存 30 天，服务重启后仍可复用。
+- 缓存过期时尝试刷新；刷新失败则继续使用旧数据。
 - 为米饭、面食、肉类、蔬菜分别提供估算规则。
 
 ## 10. 本地运行
@@ -314,6 +318,8 @@ OpenAI 通道主要用于：
 AI_PROVIDER=gemini
 GEMINI_API_KEY=your-gemini-api-key-here
 GEMINI_MODEL=gemini-2.5-flash
+USDA_API_KEY=your-usda-api-key
+USDA_CACHE_TTL_DAYS=30
 DAILY_ANALYSIS_LIMIT=3
 PORT=4173
 ```
