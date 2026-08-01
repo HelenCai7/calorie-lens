@@ -29,6 +29,7 @@ const state = {
 
 const els = {
   camera: document.querySelector("#camera"),
+  viewfinder: document.querySelector("#viewfinder"),
   photoPreview: document.querySelector("#photoPreview"),
   canvas: document.querySelector("#snapshotCanvas"),
   cameraBtn: document.querySelector("#cameraBtn"),
@@ -101,15 +102,15 @@ async function compressImageDataUrl(src) {
   canvas.height = height;
   const context = canvas.getContext("2d");
   context.drawImage(image, 0, 0, width, height);
-  return canvas.toDataURL("image/jpeg", jpegQuality);
+  return {
+    src: canvas.toDataURL("image/jpeg", jpegQuality),
+    width,
+    height
+  };
 }
 
 function formatCalories(grams, kcalPer100g) {
   return Math.round((grams * kcalPer100g) / 100);
-}
-
-function foodByName(name) {
-  return foodLibrary.find((food) => food.name === name) || foodLibrary[foodLibrary.length - 1];
 }
 
 function buildFoodEstimate(food, volumeShare, position) {
@@ -118,6 +119,8 @@ function buildFoodEstimate(food, volumeShare, position) {
     id: crypto.randomUUID(),
     name: food.name,
     kcalPer100g: food.kcalPer100g,
+    nutritionSource: "local",
+    matchedFood: "",
     grams,
     position
   };
@@ -176,6 +179,10 @@ async function analyzePlate() {
       grams: food.grams,
       confidence: food.confidence,
       notes: food.notes,
+      nutritionSource: food.nutritionSource,
+      nutritionDataType: food.nutritionDataType,
+      matchedFood: food.matchedFood,
+      fdcId: food.fdcId,
       position: food.position
     }));
 
@@ -200,10 +207,11 @@ function renderOverlay() {
     tag.style.left = `${food.position.left}%`;
     tag.style.top = `${food.position.top}%`;
     tag.style.color = colors[index % colors.length];
-    tag.innerHTML = `
-      <strong>${food.name}</strong>
-      <span>${food.grams}g · ${formatCalories(food.grams, food.kcalPer100g)} kcal</span>
-    `;
+    const name = document.createElement("strong");
+    const details = document.createElement("span");
+    name.textContent = food.name;
+    details.textContent = `${food.grams}g · ${formatCalories(food.grams, food.kcalPer100g)} kcal`;
+    tag.append(name, details);
     tag.addEventListener("pointerdown", (event) => startTagDrag(event, food.id));
     els.overlayLayer.appendChild(tag);
   });
@@ -240,17 +248,6 @@ function startTagDrag(event, foodId) {
   tag.addEventListener("pointercancel", stopDrag);
 }
 
-function populateFoodSelect(select, currentName) {
-  select.innerHTML = "";
-  foodLibrary.forEach((food) => {
-    const option = document.createElement("option");
-    option.value = food.name;
-    option.textContent = food.name;
-    option.selected = food.name === currentName;
-    select.appendChild(option);
-  });
-}
-
 function renderFoodList() {
   els.foodList.innerHTML = "";
 
@@ -265,29 +262,45 @@ function renderFoodList() {
   state.foods.forEach((food, index) => {
     const node = els.template.content.firstElementChild.cloneNode(true);
     const marker = node.querySelector(".food-marker");
-    const select = node.querySelector(".food-select");
+    const nameInput = node.querySelector(".food-name-input");
     const gramsInput = node.querySelector(".grams-input");
     const kcalInput = node.querySelector(".kcal-input");
+    const sourceOutput = node.querySelector(".nutrition-source");
     const caloriesOutput = node.querySelector(".calories-output");
     const densityOutput = node.querySelector(".density-output");
     const deleteBtn = node.querySelector(".delete-food");
 
     marker.style.background = colors[index % colors.length];
-    populateFoodSelect(select, food.name);
+    nameInput.value = food.name;
     gramsInput.value = food.grams;
     kcalInput.value = food.kcalPer100g;
     caloriesOutput.textContent = `${formatCalories(food.grams, food.kcalPer100g)} kcal`;
     densityOutput.textContent = `${food.kcalPer100g} kcal/100g`;
+    sourceOutput.textContent =
+      food.nutritionSource === "usda"
+        ? `USDA · ${food.matchedFood}`
+        : food.nutritionSource === "local"
+          ? "本地参考值"
+          : food.nutritionSource === "manual"
+            ? "手动调整"
+            : "Gemini 估算";
+    sourceOutput.title = food.matchedFood || sourceOutput.textContent;
 
-    select.addEventListener("change", () => {
-      const selected = foodByName(select.value);
-      food.name = selected.name;
-      food.kcalPer100g = selected.kcalPer100g;
-      render();
+    nameInput.addEventListener("input", () => {
+      food.name = nameInput.value;
+      food.nutritionSource = "manual";
+      food.matchedFood = "";
+      food.fdcId = null;
+      sourceOutput.textContent = "名称已修改，热量值待确认";
+      sourceOutput.title = sourceOutput.textContent;
+      renderOverlay();
     });
 
     kcalInput.addEventListener("input", () => {
       food.kcalPer100g = Math.max(1, Number(kcalInput.value) || 1);
+      food.nutritionSource = "manual";
+      sourceOutput.textContent = "手动调整";
+      sourceOutput.title = sourceOutput.textContent;
       renderTotals();
       renderOverlay();
       caloriesOutput.textContent = `${formatCalories(food.grams, food.kcalPer100g)} kcal`;
@@ -369,6 +382,8 @@ async function startCamera() {
 
   state.hasPhoto = false;
   clearAnalysisForNewPhoto("等待拍照");
+  els.viewfinder.classList.remove("has-photo");
+  els.viewfinder.style.removeProperty("--photo-aspect-ratio");
   els.photoPreview.removeAttribute("src");
   els.photoPreview.style.display = "none";
   els.analyzeBtn.disabled = true;
@@ -388,9 +403,11 @@ async function setPhoto(src) {
   state.hasPhoto = true;
   clearAnalysisForNewPhoto("处理图片");
   els.analyzeBtn.disabled = true;
-  const compressedSrc = await compressImageDataUrl(src);
-  state.photoDataUrl = compressedSrc;
-  els.photoPreview.src = compressedSrc;
+  const photo = await compressImageDataUrl(src);
+  state.photoDataUrl = photo.src;
+  els.viewfinder.style.setProperty("--photo-aspect-ratio", `${photo.width} / ${photo.height}`);
+  els.viewfinder.classList.add("has-photo");
+  els.photoPreview.src = photo.src;
   els.photoPreview.style.display = "block";
   els.camera.style.display = "none";
   els.analyzeBtn.disabled = false;
@@ -416,6 +433,8 @@ function addManualFood() {
     id: crypto.randomUUID(),
     name: food.name,
     kcalPer100g: food.kcalPer100g,
+    nutritionSource: "manual",
+    matchedFood: "",
     grams: 100,
     position: { left: 18 + ((count * 16) % 52), top: 24 + ((count * 13) % 46) }
   });
@@ -458,6 +477,8 @@ function resetApp() {
   state.foods = [];
   state.hasPhoto = false;
   state.photoDataUrl = "";
+  els.viewfinder.classList.remove("has-photo");
+  els.viewfinder.style.removeProperty("--photo-aspect-ratio");
   els.photoPreview.removeAttribute("src");
   els.photoPreview.style.display = "none";
   els.analyzeBtn.disabled = true;
