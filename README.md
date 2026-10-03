@@ -2,6 +2,8 @@
 
 一个拍照估算食物卡路里的前端原型。手机浏览器打开后可以调用相机，也可以上传照片；界面预留了食物区域和拳头参照区域，并支持逐项调整食物重量。
 
+> 本目录是原版（原生 JS + Node）。功能相同的 Next.js 版本在 [`nextjs/`](nextjs/) 目录，可部署到 Vercel，见 [nextjs/README.md](nextjs/README.md)。产品需求和开发说明见 [`docs/`](docs/)。
+
 ## 运行
 
 ```bash

@@ -1,0 +1,11 @@
+export default function manifest() {
+  return {
+    name: "Calorie Lens",
+    short_name: "Calories",
+    start_url: "/",
+    display: "standalone",
+    background_color: "#f7f3ea",
+    theme_color: "#287a63",
+    icons: []
+  };
+}

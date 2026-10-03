@@ -6,6 +6,15 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 
 本产品定位为“快速饮食记录工具”，目标不是替代专业营养师或医疗设备，而是帮助用户以较低操作成本完成日常饮食热量记录。
 
+### 1.1 版本说明
+
+项目目前同时维护两个实现，产品功能一致：
+
+- **原版**（仓库根目录）：原生 HTML/CSS/JS + Node `http` 服务，前端发布到 GitHub Pages。
+- **Next.js 版**（`nextjs/` 目录）：React 前端 + Next.js API 路由，面向 Vercel 等云平台部署，存储可接 Redis。
+
+除特别标注“Next.js 版”的条目外，本文档中的需求对两个版本同样适用。
+
 ## 2. 目标用户
 
 - 健身、减脂、增肌人群：希望快速记录每餐热量和大致营养摄入。
@@ -42,9 +51,10 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 7. 用户点击“分析照片”。
 8. 服务端检查用户 24 小时分析次数。
 9. 服务端调用 Gemini 2.5 Flash 识别图片。
-10. App 展示每项食物的名称、重量、卡路里和图片标注。
-11. 用户手动调整不准确的项目。
-12. 用户点击“保存记录”。
+10. 服务端用 USDA FoodData Central 校准每项食物的 `kcal/100g`。
+11. App 展示每项食物的名称、重量、卡路里、营养数据来源和图片标注。
+12. 用户手动调整不准确的项目。
+13. 用户点击“保存记录”。
 
 ### 5.2 上传照片流程
 
@@ -59,7 +69,7 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 ### 5.3 手动校正流程
 
 1. 用户查看识别结果。
-2. 如食物名称错误，可在食物下拉框中调整。
+2. 如食物名称错误，可在食物名称输入框中修改。
 3. 如重量不准确，可修改克重。
 4. 如热量密度不准确，可修改 `kcal/100g`。
 5. 如图片标注位置不准确，可拖动标注卡片。
@@ -74,6 +84,8 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 - “上传照片”不得强制打开相机。
 - 用户选择或拍摄新图片后，应自动清除上一张图片的识别标注和食物列表。
 - 图片预览应显示在取景框中。
+- 拍照完成后应关闭摄像头，释放相机占用。（Next.js 版已实现，原版拍照后摄像头仍保持开启）
+- 用户再次选择同一张图片时也应重新加载。（Next.js 版已实现）
 
 ### 6.2 取景辅助
 
@@ -107,14 +119,26 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
   - 置信度
   - 图片标注位置
   - 备注说明
+  - 用于 USDA 搜索的英文标准名 `usdaQuery`（包含生熟状态和烹饪方式）
+
+### 6.4.1 营养数据校准
+
+- 配置 `USDA_API_KEY` 后，服务端应使用 `usdaQuery` 搜索 USDA FoodData Central，用数据库中的 `kcal/100g` 替换模型估算值。
+- 应优先匹配 Foundation、SR Legacy、Survey (FNDDS) 数据，不使用品牌食品数据。
+- USDA 无匹配或请求失败时，应保留模型估算值，不得让整次分析失败。
+- USDA 查询结果应持久缓存，默认 30 天（`USDA_CACHE_TTL_DAYS`）；缓存过期后刷新失败时，继续使用旧缓存。
+- 每个食物项应显示营养数据来源：USDA（含匹配到的条目名称）、模型估算、本地参考值或手动调整。
+- 用户修改食物名称后，来源应提示“名称已修改，热量值待确认”。
 
 ### 6.5 分析次数限制
 
-- 同一个本机用户 24 小时内最多调用 3 次图片分析。
+- 同一个本机用户 24 小时内最多调用 3 次图片分析（`DAILY_ANALYSIS_LIMIT`）。
 - 前端应为本机用户生成 `clientId` 并保存在 `localStorage`。
-- 服务端应根据 `clientId` 记录调用次数。
-- 服务端应将用量记录保存在 `.analysis-usage.json`。
-- `.analysis-usage.json` 不应上传到 GitHub。
+- 服务端应根据 `clientId` 记录调用次数，并持久保存用量记录：
+  - 原版：保存在本地文件 `.analysis-usage.json`。
+  - Next.js 版：配置 Upstash Redis 时保存在 Redis；未配置时保存在 `nextjs/.data/usage.json`。
+- 用量记录文件不应上传到 GitHub。
+- 只有分析成功才计入次数。
 - 超过限制时，应返回明确错误信息。
 
 ### 6.6 识别结果展示
@@ -158,7 +182,7 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 ### 7.2 安全
 
 - API Key 不得写入前端代码。
-- `.env`、`.env.local`、`.analysis-usage.json` 必须加入 `.gitignore`。
+- `.env`、`.env.local`、`.analysis-usage.json`、`.nutrition-cache.json`、`nextjs/.data/` 必须加入 `.gitignore`。
 - 服务端应限制请求体大小。
 - 当前原型不应收集用户真实身份信息。
 
@@ -182,16 +206,29 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 {
   "id": "string",
   "name": "米饭",
+  "usdaQuery": "cooked white rice",
   "grams": 180,
-  "kcalPer100g": 116,
+  "kcalPer100g": 96,
   "confidence": 0.72,
   "notes": "基于拳头参照估算",
+  "nutritionSource": "usda",
+  "nutritionDataType": "Survey (FNDDS)",
+  "matchedFood": "Rice, white, cooked, glutinous",
+  "fdcId": 2708422,
   "position": {
     "left": 18,
     "top": 28
   }
 }
 ```
+
+`nutritionSource` 取值：
+
+- `usda`：已用 USDA 数据校准。
+- `gemini`：模型估算（USDA 未配置、无匹配或请求失败）。
+- `local`：本地模拟结果。
+- `manual`：用户手动修改了 `kcal/100g` 或手动添加。
+- `renamed`：用户修改了名称，热量值待确认（仅 Next.js 版）。
 
 ### 8.2 分析响应
 
@@ -203,7 +240,20 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
   "message": "识别完成，请检查重量是否准确。",
   "provider": "gemini",
   "model": "gemini-2.5-flash",
+  "nutritionDatabase": "USDA FoodData Central",
   "remaining": 2
+}
+```
+
+超过次数限制时返回 `429`：
+
+```json
+{
+  "allowed": false,
+  "status": 429,
+  "error": "同一个用户 24 小时内最多只能分析 3 张图片。",
+  "remaining": 0,
+  "resetAt": "2026-10-03T08:00:00.000Z"
 }
 ```
 
@@ -227,22 +277,34 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 
 ## 9. 配置需求
 
-`.env` 示例：
+原版使用根目录 `.env`，Next.js 版使用 `nextjs/.env.local`。示例：
 
 ```text
 AI_PROVIDER=gemini
 GEMINI_API_KEY=your-gemini-api-key-here
 GEMINI_MODEL=gemini-2.5-flash
+USDA_API_KEY=your-usda-api-key
+USDA_CACHE_TTL_DAYS=30
 DAILY_ANALYSIS_LIMIT=3
 OPENAI_API_KEY=sk-your-openai-api-key-here
 OPENAI_MODEL=gpt-4.1-mini
 PORT=4173
 ```
 
-Gemini API Key 获取地址：
+Next.js 版额外支持（线上部署时使用）：
 
 ```text
-https://aistudio.google.com/app/apikey
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+```
+
+也兼容 Vercel 注入的 `KV_REST_API_URL` / `KV_REST_API_TOKEN`。Next.js 版端口由 `npm run dev` 固定为 4174，不读取 `PORT`。
+
+API Key 获取地址：
+
+```text
+Gemini: https://aistudio.google.com/app/apikey
+USDA:   https://fdc.nal.usda.gov/api-key-signup/
 ```
 
 ## 10. 边界情况
@@ -257,9 +319,10 @@ https://aistudio.google.com/app/apikey
 ## 11. 当前版本限制
 
 - 体积和重量估算仍依赖视觉模型推断，不能保证精确。
-- 已接入 USDA FoodData Central；数据库数值更可靠，但视觉识别与数据库条目匹配仍可能存在偏差。
+- 已接入 USDA FoodData Central；数据库数值更可靠，但视觉识别与数据库条目匹配仍可能存在偏差。当前匹配只按关键词命中数打分，会出现明显错配，例如 “steamed broccoli florets” 匹配到 “Oysters, steamed”。
 - 每日限制基于本机 `clientId`，不是账号级别，清除浏览器数据会重置。
-- 用量记录存储在本地文件，暂不适合多服务器部署。
+- 原版用量记录存储在本地文件，不适合多服务器部署；Next.js 版配置 Redis 后可解决。
+- 原版发布在 GitHub Pages 上时没有后端，线上只能使用模拟结果；需要真实识别时应使用 Next.js 版部署。
 - 历史记录只保存在浏览器本地，换设备后不可同步。
 - 当前没有用户登录、云端数据库和支付系统。
 
@@ -273,7 +336,9 @@ https://aistudio.google.com/app/apikey
 - 增加食物识别反馈机制，用于改进提示词和数据库映射。
 - 增加更可靠的参照物选项，如银行卡、勺子、标准餐盘。
 - 增加会员或付费策略，与每日分析次数限制联动。
-- 上线时将本地限额替换为数据库或 Redis 限额。
+- ~~上线时将本地限额替换为数据库或 Redis 限额。~~ Next.js 版已支持 Redis 限额。
+- 改进 USDA 匹配打分，减少错配（如加入食物类别校验、同义词表）。
+- 增加账号后，可接入 Supabase（Auth + Postgres）统一承担登录、云端历史和限额存储。
 
 ## 13. 验收标准
 
@@ -283,6 +348,7 @@ https://aistudio.google.com/app/apikey
 - 上传新照片后，上一张照片的标注会清空。
 - 上传高清照片后，前端会压缩图片再分析。
 - 配置 Gemini API Key 后，系统能返回真实识别结果。
+- 配置 USDA API Key 后，食物项显示 USDA 来源和匹配条目。
 - 同一用户 24 小时内第 4 次分析应被拒绝。
 - 用户能编辑食物名称、重量、热量密度。
 - 用户能拖动图片上的食物标注。
