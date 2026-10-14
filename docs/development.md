@@ -4,12 +4,12 @@
 
 本文档用于指导 Calorie Lens 的产品开发、技术实现、联调测试和后续迭代。需求范围以 `docs/requirements.md` 为准，本文档重点说明工程结构、模块职责、接口设计、运行配置、测试方案和上线演进路线。
 
-项目目前有两个实现，产品功能一致：
+项目目前有两个实现：
 
-- **原版**：仓库根目录，原生 JS + Node `http`，前端发布到 GitHub Pages。
-- **Next.js 版**：`nextjs/` 目录，面向 Vercel 部署，前后端在同一个项目里。
+- **原版**：仓库根目录，原生 JS + Node `http`，前端发布到 GitHub Pages。已停止加新功能，只作为对照保留。
+- **Next.js 版**：`nextjs/` 目录，部署在 Vercel（https://calorie-lens-nine.vercel.app），前后端在同一个项目里。
 
-两个版本互不依赖，可以同时运行。新功能建议优先在 Next.js 版开发。
+拍照、识别、USDA 校准、手动校正这些核心功能两个版本一致。**用户登录、云端历史、热量统计、隐私政策页只有 Next.js 版有**，本文档中会标注“仅 Next.js 版”。两个版本互不依赖，可以同时运行。
 
 ## 2. 技术栈
 
@@ -20,7 +20,8 @@
 | AI 模型 | 默认 Gemini 2.5 Flash，备用 OpenAI | 同左 |
 | 营养数据 | USDA FoodData Central | 同左 |
 | 每日次数 / USDA 缓存 | 本地 `.analysis-usage.json` / `.nutrition-cache.json` | Upstash Redis；未配置时写 `nextjs/.data/` |
-| 历史记录、`clientId` | 浏览器 `localStorage` | 同左 |
+| 用户身份 | 浏览器生成的 `clientId` | Supabase Auth（Google 登录、邮件登录链接），`@supabase/ssr` 管理 cookie |
+| 历史记录 | 浏览器 `localStorage` | Supabase Postgres `meals` 表（Row Level Security） |
 | 配置 | 根目录 `.env` | `nextjs/.env.local` |
 | 本地端口 | 4173 | 4174 |
 | 部署 | GitHub Pages（仅前端，线上无后端） | Vercel（Root Directory 选 `nextjs`） |
@@ -43,17 +44,26 @@ Calorie Track/
     requirements.md       # 产品需求文档
     development.md        # 产品开发文档
   nextjs/
+    proxy.js              # 每次请求前刷新 Supabase 登录状态（Next.js 16 的 middleware 改名为 proxy）
     app/
       layout.js           # 页面外壳、标题、viewport
       page.js             # 首页，渲染 CalorieLens
       manifest.js         # PWA manifest（/manifest.webmanifest）
-      globals.css         # 样式（来自原版 styles.css）
+      globals.css         # 样式（来自原版 styles.css，加上登录弹窗、统计图、法律页面）
       api/analyze/
-        route.js          # POST /api/analyze
+        route.js          # POST /api/analyze（需要登录）
+      auth/callback/
+        route.js          # Google 登录和邮件登录链接的回调，用 code 换取登录状态
+      stats/page.js       # 热量统计页
+      privacy/page.js     # 隐私政策（英文）
+      terms/page.js       # 服务条款（英文）
     components/
-      CalorieLens.jsx     # 主界面：相机、上传、分析、食物列表、历史记录
+      CalorieLens.jsx     # 主界面：账号栏、相机、上传、分析、食物列表、云端历史
+      AuthPanel.jsx       # 登录弹窗：Google 登录、邮件登录链接
+      MealStats.jsx       # 统计页：今日热量、7 日平均、7 天柱状图、每日明细
       FoodItem.jsx        # 单个食物条目的编辑
       FoodTag.jsx         # 图片上可拖动的食物标注
+      LegalPage.jsx       # 隐私政策、服务条款的页面外壳
     lib/
       config.js           # 环境变量读取
       vision.js           # prompt、schema、Gemini / OpenAI 调用、clampFood
@@ -61,6 +71,17 @@ Calorie Track/
       rate-limit.js       # 24 小时滚动窗口次数限制
       store.js            # 存储抽象：Redis 或本地文件
       meal.js             # 前端共用：食物库、热量计算、图片压缩、模拟结果
+      meals.js            # 餐食记录的读写、旧本地历史导入
+      use-supabase-user.js # 前端登录状态 hook
+      legal.js            # 法律页面的联系邮箱、更新日期
+      supabase/
+        env.js            # Supabase 网址和 publishable key
+        client.js         # 浏览器端 Supabase 客户端
+        server.js         # 服务端 Supabase 客户端、getSignedInUserId()
+    supabase/
+      migrations/
+        001_meals.sql     # meals 表、索引和 RLS 规则
+    .claude/skills/supabase/  # Supabase 官方给 AI 编程助手的规范（Vercel 集成自动安装）
     .env.example          # Next.js 版环境变量模板
     README.md             # Next.js 版运行和部署说明
 ```
@@ -72,8 +93,11 @@ flowchart LR
   User["用户"] --> Browser["手机/桌面浏览器"]
   Browser --> Frontend["前端<br/>原版 app.js / Next.js CalorieLens"]
   Frontend --> Compress["图片压缩 1280px JPEG"]
+  Frontend <-.-> Supabase[("Supabase（仅 Next.js 版）<br/>Auth + meals 表")]
   Compress --> API["POST /api/analyze"]
-  API --> Limit["24 小时次数限制"]
+  API --> Auth{"已登录？<br/>（仅 Next.js 版）"}
+  Auth -->|否| Reject["401 请先登录"]
+  Auth -->|是| Limit["24 小时次数限制"]
   Limit --> Provider{"AI_PROVIDER"}
   Provider --> Gemini["Gemini 2.5 Flash"]
   Provider --> OpenAI["OpenAI 备用"]
@@ -84,10 +108,12 @@ flowchart LR
   USDA -.-> Store
   API --> Frontend
   Frontend --> UI["图片标注 + 食物列表 + 总热量"]
-  Frontend --> LocalStorage["localStorage 历史记录"]
+  Frontend --> LocalStorage["原版：localStorage 历史记录"]
 ```
 
-两个版本的 `/api/analyze` 请求格式、响应格式、prompt 和 USDA 匹配逻辑完全一致，前端可以互换。
+两个版本的 `/api/analyze` 响应格式、prompt 和 USDA 匹配逻辑一致。区别是 Next.js 版要求请求带上登录 cookie，按账号计次，不再接受 `clientId`。
+
+保存的餐食记录由浏览器直接通过 `supabase-js` 读写 Supabase，不经过我们的后端；能不能读写由数据库的 Row Level Security 决定。
 
 ## 5. 前端模块设计
 
@@ -98,7 +124,14 @@ flowchart LR
 - `camera-panel`：相机、图片预览、食物区域、拳头参照区域、拍照和上传入口。
 - `analysis-panel`：总热量、总重量、置信度、分析按钮、食物列表、拳头体积滑块和历史记录。
 
-Next.js 版沿用原版的 CSS 类名和 `#camera`、`#photoPreview` 两个 id，所以 `globals.css` 基本就是原版的 `styles.css`。
+Next.js 版沿用原版的 CSS 类名和 `#camera`、`#photoPreview` 两个 id，所以 `globals.css` 的主体就是原版的 `styles.css`。
+
+Next.js 版额外的页面和区域：
+
+- **账号栏**（`camera-panel` 标题下方）：未登录显示“登录”；已登录显示邮箱、“热量统计”链接和“退出”。
+- **登录弹窗**（`AuthPanel`）：Google 登录按钮，加上邮件登录链接表单。
+- **`/stats`**：热量统计页。
+- **`/privacy`、`/terms`**：隐私政策和服务条款，英文，联系邮箱和更新日期在 `lib/legal.js`。
 
 ### 5.2 状态管理
 
@@ -127,9 +160,37 @@ Next.js 版沿用原版的 CSS 类名和 `#camera`、`#photoPreview` 两个 id�
 | `status` | 置信度区域显示的文字（等待照片、识别中、较高等） |
 | `foods` | 当前食物列表 |
 | `fistVolumeMl` | 拳头参照体积 |
-| `history` | 本地历史记录 |
+| `history` | 最近 8 条云端餐食记录，未登录时为空 |
+| `authReason` | 登录弹窗的提示文字；`null` 表示弹窗关闭 |
+| `confirmingClear` | “清空”是否处于二次确认状态 |
 
-摄像头流（`streamRef`）、`clientId`（`clientIdRef`）用 `useRef` 保存，因为它们变化时不需要重新渲染。`localStorage` 只在 `useEffect` 中读取，避免服务端渲染时报错。
+登录状态来自 `useSupabaseUser()`（`lib/use-supabase-user.js`），返回 `{ supabase, user, ready }`。它先调用 `getUser()`，再订阅 `onAuthStateChange`；回调里只更新状态，不调用其他 Supabase 方法，否则可能卡死。
+
+摄像头流（`streamRef`）用 `useRef` 保存，因为它变化时不需要重新渲染。
+
+### 5.2.1 登录（仅 Next.js 版）
+
+- **Google 登录**：`signInWithOAuth({ provider: "google", redirectTo: <origin>/auth/callback })` → Google → Supabase → `/auth/callback?code=...` → `exchangeCodeForSession(code)` → 回到首页。
+- **邮件登录链接**：`signInWithOtp({ email, emailRedirectTo: <origin>/auth/callback })`，用户点邮件里的链接后走同一个回调。
+  - 链接必须在发起登录的**同一个浏览器**里打开：`@supabase/ssr` 默认使用 PKCE，校验依赖这个浏览器里的 cookie。
+  - 本来计划用 6 位验证码登录（`verifyOtp`），手机上更可靠。但 Supabase 免费版在使用自带邮件服务时不能修改邮件模板，邮件里没法放验证码。配置自定义 SMTP 后再改回验证码。
+- **需要登录的操作**：分析照片、保存记录。未登录时点这两个按钮会弹出登录框，并说明为什么需要登录。
+- **`proxy.js`**：每个请求都调用 `supabase.auth.getClaims()`，在 token 快过期时刷新并写回 cookie。带登录 cookie 的响应会加上 `Cache-Control: private, no-store`，防止 CDN 把一个用户的登录状态缓存给别人。
+
+### 5.2.2 云端历史记录（仅 Next.js 版）
+
+- 登录后读取最近 8 条记录（`fetchRecentMeals`）。
+- 保存时 `insertMeal` 写入 `meals` 表，`user_id` 由数据库默认值 `auth.uid()` 填入，前端不传。
+- **清空**需要点两次（“清空” → “确认删除全部记录”），删除当前用户的全部记录。
+- **旧记录导入**：第一次登录时，`importLegacyHistory` 把原来存在 `localStorage` 的记录一次性导入账号，然后删除本地副本，并记下 `calorie-lens-history-imported:<userId>`，避免重复导入。旧记录的时间是“10/02 21:30”这种不带年份的字符串，按今年还原；如果还原后在未来，就算作去年。
+
+### 5.2.3 热量统计页（仅 Next.js 版）
+
+`MealStats` 读取最近 7 天（含今天）的记录，按本地日期分组：
+
+- 三个数字：今日热量、7 日平均（只算有记录的天）、7 日记录餐数。
+- 柱状图：每天一根柱，颜色 `#1f8a68`（主题绿 `#287a63` 的饱和度不够，图表里显得发灰，用数据可视化检查脚本验证过对比度和饱和度）。柱宽不超过 24px，顶端 4px 圆角，只给“今天”这一根直接标数值；每根柱子都可以悬停或用键盘聚焦，显示日期、热量、餐数。纵轴最大值取整到 250 / 500 的倍数。
+- 每日明细：按天列出每一餐，同时作为图表的表格视图。
 
 ### 5.3 图片处理
 
@@ -200,11 +261,12 @@ Content-Type: application/json
 
 ```json
 {
-  "clientId": "local-user-id",
   "fistVolumeMl": 350,
   "imageDataUrl": "data:image/jpeg;base64,..."
 }
 ```
+
+原版还需要带上 `"clientId": "local-user-id"`。Next.js 版不接受 `clientId`，而是从请求的 Supabase 登录 cookie 里识别用户（`getSignedInUserId()` 调用 `getClaims()` 校验 JWT）。
 
 成功响应：
 
@@ -246,7 +308,8 @@ Content-Type: application/json
 常见状态码：
 
 - `400`：请求格式错误、缺少用户标识、图片格式错误、请求体超过 5,000,000 字符。
-- `429`：超过 24 小时分析次数限制，响应中带 `resetAt`。
+- `401`（仅 Next.js 版）：未登录或登录已过期，响应带 `needsLogin: true`。前端会弹出登录框，不显示模拟结果。
+- `429`：超过 24 小时分析次数限制，响应中带 `resetAt`。Next.js 版前端直接提示恢复时间，不显示模拟结果。
 - `501`：未配置 API Key。
 - `500`：模型调用失败、返回无法解析或存储不可用。
 
@@ -254,9 +317,11 @@ Next.js 版中 `route.js` 设置了 `runtime = "nodejs"` 和 `maxDuration = 60`�
 
 ### 6.4 限额控制
 
-限额逻辑（两个版本相同）：
+限额逻辑：
 
-- 使用 `clientId` 作为本机用户标识，只保留字母、数字、`_`、`-`，最长 80 字符。
+- **计次依据**：
+  - 原版用浏览器生成的 `clientId`，可以被清除或伪造，只是原型级别的限额。
+  - Next.js 版用登录账号，键为 `user_<Supabase 用户 ID>`。
 - `DAILY_ANALYSIS_LIMIT` 默认值为 `3`。
 - 时间窗口为 24 小时滚动窗口。
 - 请求成功完成 AI 分析后才记录一次用量。
@@ -264,9 +329,9 @@ Next.js 版中 `route.js` 设置了 `runtime = "nodejs"` 和 `maxDuration = 60`�
 存储位置：
 
 - **原版**：`.analysis-usage.json`。
-- **Next.js 版**：`lib/rate-limit.js` 通过 `lib/store.js` 读写 `usage` 命名空间，Redis 键为 `calorie-lens:usage:<clientId>`，过期时间 24 小时。
+- **Next.js 版**：`lib/rate-limit.js` 通过 `lib/store.js` 读写 `usage` 命名空间，Redis 键为 `calorie-lens:usage:user_<userId>`，过期时间 24 小时。
 
-`clientId` 由前端生成，可以被清除或伪造，所以这只是原型级别的限额。正式上线后应改为基于账号的限额。
+账号虽然比 `clientId` 难伪造，但一个人仍然可以注册多个账号。目前 Google 账号和邮箱都有一定的注册成本，可以接受；如果以后被滥用，再考虑加验证码（CAPTCHA）或按 IP 限流。
 
 ### 6.5 存储层（Next.js 版）
 
@@ -279,12 +344,60 @@ Next.js 版中 `route.js` 设置了 `runtime = "nodejs"` 和 `maxDuration = 60`�
 
 | 命名空间 | 内容 | 过期 |
 | --- | --- | --- |
-| `usage` | 每个 `clientId` 最近 24 小时的分析时间戳 | 24 小时 |
+| `usage` | 每个账号最近 24 小时的分析时间戳 | 24 小时 |
 | `usda` | `{ cachedAt, value }`，键为小写的 `usdaQuery` | 不设 Redis 过期，由代码按 `USDA_CACHE_TTL_DAYS` 判断是否刷新 |
 
-以后接入 Supabase 或其他数据库时，只需要替换这个文件。
+Redis 只用来存次数和缓存。用户账号和餐食记录存在 Supabase（见 6.6）。以后如果想少管理一个服务，可以把这两类数据也搬进 Supabase，只需要替换 `lib/store.js`。
 
-### 6.6 AI Provider
+### 6.6 Supabase（仅 Next.js 版）
+
+项目：`calorie-lens-db`，免费版，区域 `iad1`（美国东部，和 Vercel 函数同区域），通过 Vercel Marketplace 创建，环境变量由 Vercel 自动注入。
+
+**数据表** `public.meals`（建表脚本 `nextjs/supabase/migrations/001_meals.sql`）：
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | uuid | 主键 |
+| `user_id` | uuid | 默认 `auth.uid()`，外键到 `auth.users`，删除用户时级联删除 |
+| `eaten_at` | timestamptz | 用餐时间，默认 `now()` |
+| `total_calories` | integer | ≥ 0 |
+| `total_grams` | integer | ≥ 0 |
+| `foods` | jsonb | `[{ name, grams, kcalPer100g }]` |
+| `created_at` | timestamptz | 写入时间 |
+
+索引：`(user_id, eaten_at desc)`。
+
+**Row Level Security**：开启。三条规则都是 `to authenticated` 加上 `(select auth.uid()) = user_id`：
+
+| 规则 | 操作 |
+| --- | --- |
+| `meals_select_own` | 只能读自己的记录 |
+| `meals_insert_own` | 只能以自己的身份写入 |
+| `meals_delete_own` | 只能删除自己的记录 |
+
+没有 UPDATE 规则，因为 App 不修改已保存的记录。
+
+**已验证**（2026-10-09 / 10-13）：
+- 未登录读取返回空列表，写入被拒绝。
+- 两个测试账号互相看不到、删不掉对方的记录，也不能冒充对方写入。
+- Supabase 安全顾问只提示“泄露密码检测未开启”，而我们不用密码登录，所以不适用。
+- 性能顾问没有发现问题。
+
+**Auth 设置**：
+- Site URL：`https://calorie-lens-nine.vercel.app`
+- Redirect URLs：线上和 `http://localhost:4174` 的 `/auth/callback`
+- 登录方式：Google（OAuth 客户端在 Google Cloud 项目 “Calorie Lens” 里）、邮件登录链接
+
+**免费版限制**：
+- 自带邮件服务每小时最多发 2 封，**只发给 Supabase 项目的团队成员**。
+- 邮件模板不能修改，所以做不了验证码登录。
+- 解决办法是接入自定义 SMTP，比如 Resend，需要先有自己的域名。
+
+**密钥使用规则**：
+- 前端只用 `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`。
+- `SUPABASE_SECRET_KEY` / `SUPABASE_SERVICE_ROLE_KEY` 绕过 RLS，App 代码中不使用，只能在服务端的管理脚本里使用，**绝不能**放进 `NEXT_PUBLIC_` 变量。
+
+### 6.7 AI Provider
 
 后端通过 `AI_PROVIDER` 切换模型提供方：
 
@@ -428,11 +541,17 @@ node server.js
 ```bash
 cd nextjs
 npm install
-cp .env.example .env.local   # 填入 GEMINI_API_KEY、USDA_API_KEY
+cp .env.example .env.local   # 填入 GEMINI_API_KEY、USDA_API_KEY、Supabase 的两个 NEXT_PUBLIC_ 变量
 npm run dev
 ```
 
 访问 `http://localhost:4174`。开发模式下修改代码会自动刷新；修改 `.env.local` 后需要重启 `npm run dev`。
+
+本地默认不配 Redis：次数和 USDA 缓存写在 `nextjs/.data/`，和线上的计数互不影响。本地登录用的是线上同一个 Supabase 项目，所以本地保存的记录会出现在线上账号里。
+
+没有配置 Supabase 变量时，App 仍能打开，账号栏会显示“登录功能未配置”，但没法分析照片，因为分析需要登录。
+
+`nextjs/.vercel/` 是 `vercel link` 生成的项目关联信息，`nextjs/supabase/.temp/` 是 Supabase CLI 的关联信息，都已加入 `.gitignore`。
 
 生产模式本地验证：
 
@@ -459,7 +578,7 @@ cd nextjs
 npm run build
 ```
 
-构建成功时应看到 `/` 为静态页面（○），`/api/analyze` 为动态路由（ƒ）。
+构建成功时应看到 `/`、`/stats`、`/privacy`、`/terms` 为静态页面（○），`/api/analyze`、`/auth/callback` 为动态路由（ƒ），并列出 `Proxy (Middleware)`。
 
 ### 11.2 手动功能测试
 
@@ -481,27 +600,43 @@ Next.js 版额外测试：
 - 拍照后摄像头指示灯熄灭。
 - 连续两次选择同一张图片，第二次也会重新加载。
 - 清空克重输入框后重新输入，输入过程不会被强制改成 1。
+- 未登录点“分析照片”或“保存记录”，会弹出登录框。
+- Google 登录后账号栏显示邮箱；点“退出”后恢复为未登录。
+- 保存记录后，在另一台设备登录同一账号也能看到。
+- “清空”要点两次才会删除。
+- `/stats` 的柱状图和每日明细与保存的记录一致；悬停或用 Tab 键聚焦柱子会显示数值。
+- 有旧版本本地记录的浏览器，第一次登录后提示“已导入 N 条本机记录”。
 
 ### 11.3 API 测试
 
-示例请求（原版端口 4173，Next.js 版端口 4174）：
+原版（端口 4173）：
 
 ```bash
-curl -X POST http://127.0.0.1:4174/api/analyze \
+curl -X POST http://127.0.0.1:4173/api/analyze \
   -H "Content-Type: application/json" \
   -d "{\"clientId\":\"test-user\",\"fistVolumeMl\":350,\"imageDataUrl\":\"data:image/jpeg;base64,...\"}"
 ```
 
+Next.js 版（端口 4174）不带登录 cookie 时应返回 `401`：
+
+```bash
+curl -X POST http://localhost:4174/api/analyze \
+  -H "Content-Type: application/json" \
+  -d "{\"fistVolumeMl\":350,\"imageDataUrl\":\"data:image/jpeg;base64,AAAA\"}"
+```
+
 用真实图片测试时，可以先用 Node 生成请求体再用 `--data-binary @body.json` 发送，避免命令行过长。
+
+**Next.js 版的登录后测试**：用 Supabase 的 secret key 通过 admin API 临时创建测试用户，再用 `@supabase/ssr` 的 `createServerClient` 和一个内存 cookie 容器调用 `signInWithPassword`，就能拿到真实的 `sb-<ref>-auth-token` cookie，用来调用 `/api/analyze`、测试 RLS。测完务必删除测试用户和它们的记录。secret key 只在本机脚本中使用，不能提交，也不能放进 App 代码。
 
 预期：
 
 - 配置正确时返回 `200`。
-- 缺少 `clientId` 返回 `400`。
+- 原版缺少 `clientId` 返回 `400`；Next.js 版未登录返回 `401`。
 - 超过限制返回 `429`。
 - 未配置 Key 返回 `501`。
 
-注意：每次成功的测试调用都会消耗该 `clientId` 的一次额度和一次 Gemini 调用。测试时使用单独的 `clientId`，测完可以删除 `.analysis-usage.json` 或 `nextjs/.data/` 来重置。
+注意：每次成功的测试调用都会消耗一次额度和一次 Gemini 调用。测完可以删除 `.analysis-usage.json` 或 `nextjs/.data/` 来重置本地计数。
 
 ## 12. 错误处理策略
 
@@ -509,7 +644,10 @@ curl -X POST http://127.0.0.1:4174/api/analyze \
 
 - 图片读取失败：弹窗提示。
 - 相机不可用或无权限：弹窗提示改用上传照片。
-- 模型调用失败或超过限额：弹窗提示，并展示本地模拟结果。
+- 模型调用失败：弹窗提示，并展示本地模拟结果。
+- 超过限额：原版同上；Next.js 版只提示恢复时间，不显示模拟结果。
+- 未登录或登录过期（仅 Next.js 版）：弹出登录框。
+- 读取、保存、清空云端记录失败（仅 Next.js 版）：弹窗显示 Supabase 返回的错误。
 - 无图片时分析：提示先拍照或上传照片。
 - 图片处理中或识别中：禁用分析按钮，避免重复提交。
 
@@ -523,6 +661,7 @@ curl -X POST http://127.0.0.1:4174/api/analyze \
 - 模型输出异常：返回 `500`。
 - USDA 失败：记录警告，保留模型估算值，不返回错误。
 - Redis 不可用（Next.js 版）：限额检查失败，返回 `500`。
+- Supabase 登录校验失败（Next.js 版）：按未登录处理，返回 `401`。
 
 ## 13. 数据与隐私
 
@@ -531,26 +670,32 @@ curl -X POST http://127.0.0.1:4174/api/analyze \
 - 不上传 API Key 到 GitHub。
 - 不保存用户照片到服务器文件系统或数据库。
 - 图片只在请求过程中传给模型服务。
-- 历史记录保存在浏览器本地。
-- 限额记录只保存 `clientId` 和时间戳。
+- 历史记录：原版保存在浏览器本地；Next.js 版保存在 Supabase，只有本人能读写。
+- 限额记录只保存用户标识（原版 `clientId`，Next.js 版用户 ID）和时间戳，24 小时后过期。
 - USDA 缓存只保存食物查询词和营养数据，不含用户信息。
 
-上线前需要补充：
+隐私政策 `/privacy` 和服务条款 `/terms` 已上线（仅 Next.js 版，英文）。草稿由 AI 起草，正式商用前应请律师审阅，或改用专业的生成服务。
 
-- 隐私政策。
-- 用户授权说明。
-- 图片保留策略。
-- 第三方模型服务数据处理说明。
-- 用户删除数据能力。
+**改动数据处理方式时，必须同步更新 `/privacy`**：比如新增第三方服务、开始保存照片、加入统计分析等，并修改 `lib/legal.js` 里的更新日期。
+
+还缺：
+
+- App 内删除账号功能。目前隐私政策承诺用户发邮件申请，30 天内删除。
+- Gemini 是否走付费层要和隐私政策的表述保持一致。免费层下 Google 可能用提交的内容改进产品。
 
 ## 14. 安全要求
 
-- `.env`、`.env.local`（包括 `nextjs/.env.local`）不得提交到 Git。
-- `.analysis-usage.json`、`.nutrition-cache.json`、`nextjs/.data/` 不得提交到 Git。
-- 前端不得出现任何 API Key。Next.js 版的 Key 只在 `lib/` 和 `route.js` 中读取，不能加 `NEXT_PUBLIC_` 前缀。
-- 生产环境应使用 HTTPS（Vercel 默认提供）。
-- 生产环境应增加身份认证和服务端鉴权。
-- 生产环境应增加请求频控和异常监控。
+- `.env`、`.env.local`（包括 `nextjs/.env.local`）不得提交到 Git。`nextjs/.gitignore` 忽略所有 `.env*`，只放行 `.env.example`。
+- `.analysis-usage.json`、`.nutrition-cache.json`、`nextjs/.data/`、`nextjs/.vercel/` 不得提交到 Git。
+- 前端不得出现任何 API Key。Next.js 版的 Key 只在 `lib/` 和 `route.js` 中读取，不能加 `NEXT_PUBLIC_` 前缀。唯一例外是 Supabase 的 URL 和 publishable key，它们本来就是公开的，安全依靠 RLS 保证。
+- 每张存放用户数据的 Supabase 表都必须开启 RLS，规则要同时写 `to authenticated` 和“只能操作自己的行”的条件。只写 `to authenticated` 等于所有登录用户都能读写所有人的数据。
+- 授权判断不能使用 `user_metadata`，用户可以自己修改它。
+- 新增 UPDATE 规则时必须同时写 `using` 和 `with check`，否则用户能把记录改到别人名下。
+- 不要用 `SECURITY DEFINER` 函数绕过权限错误。
+- 每次改数据库后，用 Supabase 安全顾问（控制台的 Advisors，或管理 API `/v1/projects/<ref>/advisors/security`）检查一遍。
+- 依赖版本在 `package.json` 中固定，并提交 `package-lock.json`。
+- 生产环境使用 HTTPS（Vercel 默认提供）。
+- 已完成：身份认证、服务端鉴权、按账号限流。待做：异常监控。
 
 ## 15. 部署
 
@@ -565,19 +710,28 @@ GitHub Pages 只托管静态文件，没有 `server.js`，所以线上调用 `/a
 1. 在 Vercel 导入 GitHub 仓库，**Root Directory 选 `nextjs`**。
 2. 在 Environment Variables 中填入 `GEMINI_API_KEY`、`USDA_API_KEY` 等变量（参考 `nextjs/.env.example`）。
 3. 在 Vercel Marketplace 添加 Upstash Redis，会自动注入 `KV_REST_API_URL` / `KV_REST_API_TOKEN`。
-4. 部署后用手机打开线上地址，完整测一次拍照和分析。
+4. 在 Vercel Marketplace 添加 Supabase（或用 CLI：`vercel integration add supabase`），会自动注入 `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` 等变量。
+5. 在 Supabase 运行 `nextjs/supabase/migrations/` 下的建表脚本，并设置 Auth 的 Site URL、Redirect URLs、Google 登录（见 6.6）。
+6. 部署后用手机打开线上地址，完整测一次登录、拍照、分析、保存。
 
 不配 Redis 也能运行，但每日次数和 USDA 缓存只会留在单个函数实例的内存里，次数限制基本不起作用。
 
 这个版本不能部署到 GitHub Pages：静态导出（`output: "export"`）会去掉 API 路由。
+
+**当前线上环境**：
+- Vercel 团队 `helen-cai7`，项目 `calorie-lens`，已连接 GitHub。推送到 `main` 会自动部署，同一次推送也会触发原版的 GitHub Pages 发布。
+- 正式网址：https://calorie-lens-nine.vercel.app （`calorie-lens.vercel.app` 已被别人占用）。
+
+**会话凭据过期**：Vercel CLI 的登录令牌有效期较短，过期后运行任意 `vercel` 命令会自动续期。
 
 ### 15.3 演进路线
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | 本地原型 | 单 Node 进程、本地文件存储限额、浏览器本地历史 | 已完成（原版） |
-| MVP 云端版本 | 前后端一起部署到 Vercel、Redis 限额、API Key 放在云环境变量 | 代码已完成（Next.js 版），待部署 |
-| 账号版本 | 用户登录、云端历史同步、按账号限额 | 未开始，建议用 Supabase（Auth + Postgres） |
+| MVP 云端版本 | 前后端一起部署到 Vercel、Redis 限额、API Key 放在云环境变量 | 已上线（2026-10-07） |
+| 账号版本 | 用户登录、云端历史同步、按账号限额、统计页、隐私政策 | 已上线（2026-10-13）。邮箱登录要等接入自定义 SMTP 后才能对所有用户开放 |
+| 公开测试版 | 修 USDA 匹配、统一中文名称、改进出错提示和加载状态、PWA 图标、自定义域名和 SMTP、Gemini 付费和预算 | 未开始 |
 | 商业化版本 | 订阅套餐、分析次数与套餐绑定、多模型评估和自动降级、运营后台 | 未开始 |
 
 ## 16. 开发任务拆分
@@ -595,14 +749,19 @@ GitHub Pages 只托管静态文件，没有 `server.js`，所以线上调用 `/a
 - 图片标注拖动。
 - 历史记录。
 - Next.js 版本迁移，支持 Redis 存储和 Vercel 部署。
+- Next.js 版：Google 登录、邮件登录链接、按账号限次。
+- Next.js 版：Supabase 云端历史（RLS）、旧本地记录导入、热量统计页。
+- Next.js 版：隐私政策和服务条款页面。
 
 ### 16.2 下一阶段
 
-- 部署 Next.js 版到 Vercel 并配置 Upstash Redis。
 - 改进 USDA 匹配打分，修复错配问题。
 - 在 prompt 中统一食物名称语言。
+- 用页面内提示代替 `alert`，识别时显示进度。
+- PWA 图标。
+- 自定义域名 + 自定义 SMTP（比如 Resend），对所有用户开放邮箱登录，改回验证码。
+- App 内删除账号功能。
 - 增加蛋白质、脂肪、碳水估算。
-- 增加账号系统，将历史记录和限额迁移到后端。
 - 增加错误日志和用量统计。
 - 增加模型识别反馈机制。
 
@@ -616,6 +775,7 @@ GitHub Pages 只托管静态文件，没有 `server.js`，所以线上调用 `/a
 - 手机浏览器拍照测试。
 - Gemini API 真实调用测试。
 - 第 4 次分析限额测试。
+- Next.js 版：登录、保存、统计页手动测试；改了数据库要跑 Supabase 安全顾问。
 - Git 检查确认 `.env`、`.env.local`、缓存和用量文件未被跟踪。
 
 ## 18. 关键风险
@@ -625,8 +785,10 @@ GitHub Pages 只托管静态文件，没有 `server.js`，所以线上调用 `/a
 - 模型可能误识别混合菜。
 - USDA 匹配可能错配，导致热量密度明显偏离。
 - 免费或低价 API 可能有速率限制。
-- 本地限额容易被清浏览器数据或伪造 `clientId` 绕过。
+- 原版的本地限额容易被清浏览器数据或伪造 `clientId` 绕过；Next.js 版改为按账号计次，但一个人仍可以注册多个账号。
 - 两个版本并行维护时，后端逻辑（prompt、USDA 打分）需要同步修改，否则结果会不一致。
+- Supabase 免费版一周没有活动会暂停项目；有真实用户访问时不会触发。
+- 邮件登录链接在手机上可能被邮件 App 用另一个浏览器打开，导致登录失败。
 
 ## 19. 决策记录
 
@@ -637,4 +799,8 @@ GitHub Pages 只托管静态文件，没有 `server.js`，所以线上调用 `/a
 - 当前限额按本机用户实现，原因是原型阶段没有账号系统。
 - 新增 Next.js 版而不是改写原版，原因是保留可运行的原版作为对照，同时让后端可以部署到云端。两个版本放在同一个仓库，Next.js 版位于 `nextjs/` 子目录。
 - Next.js 版使用 JavaScript 而不是 TypeScript，原因是与原版代码风格一致，降低迁移成本。
-- Next.js 版存储选 Upstash Redis，原因是无需建表、Vercel 一键接入、免费额度足够，而且通过 REST API 调用不需要额外依赖。账号阶段再评估是否换成 Supabase。
+- Next.js 版存储选 Upstash Redis，原因是无需建表、Vercel 一键接入、免费额度足够，而且通过 REST API 调用不需要额外依赖。
+- 账号和餐食记录用 Supabase（Auth + Postgres），原因是登录、数据库、行级权限一个服务就能解决，Vercel 一键接入，免费版有 5 万月活。Redis 继续负责次数和缓存，暂不合并。
+- 餐食记录由浏览器直接读写 Supabase，不经过自己的 API，原因是 RLS 已经保证每人只能访问自己的数据，少写一层后端代码。
+- 登录方式先上 Google，原因是 Supabase 自带邮件服务只能发给团队成员，在接入自定义 SMTP 之前，Google 是其他用户唯一能用的登录方式。
+- 联系邮箱用专门的 `helenc881223@gmail.com`，不公开个人邮箱。

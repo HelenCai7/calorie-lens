@@ -7,3 +7,4 @@ next-env.d.ts
 !.env.example
 .supabase-token
 .google-oauth
+supabase/.temp/

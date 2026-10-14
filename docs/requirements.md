@@ -8,12 +8,12 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 
 ### 1.1 版本说明
 
-项目目前同时维护两个实现，产品功能一致：
+项目目前有两个实现：
 
-- **原版**（仓库根目录）：原生 HTML/CSS/JS + Node `http` 服务，前端发布到 GitHub Pages。
-- **Next.js 版**（`nextjs/` 目录）：React 前端 + Next.js API 路由，面向 Vercel 等云平台部署，存储可接 Redis。
+- **原版**（仓库根目录）：原生 HTML/CSS/JS + Node `http` 服务，前端发布到 GitHub Pages。已停止加新功能。
+- **Next.js 版**（`nextjs/` 目录）：React 前端 + Next.js API 路由，部署在 Vercel（https://calorie-lens-nine.vercel.app），使用 Supabase 做登录和数据库。
 
-除特别标注“Next.js 版”的条目外，本文档中的需求对两个版本同样适用。
+除特别标注“Next.js 版”的条目外，本文档中的需求对两个版本同样适用。用户账号（6.9）、云端历史（6.8）、热量统计（6.10）、法律页面（6.11）只有 Next.js 版有。
 
 ## 2. 目标用户
 
@@ -48,7 +48,7 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 4. 如需份量参照，将拳头放入右下角参照区域。
 5. 点击“拍照”。
 6. App 清除上一张图片的识别结果，并压缩新图片。
-7. 用户点击“分析照片”。
+7. 用户点击“分析照片”。Next.js 版如果未登录，先弹出登录框。
 8. 服务端检查用户 24 小时分析次数。
 9. 服务端调用 Gemini 2.5 Flash 识别图片。
 10. 服务端用 USDA FoodData Central 校准每项食物的 `kcal/100g`。
@@ -132,9 +132,11 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 
 ### 6.5 分析次数限制
 
-- 同一个本机用户 24 小时内最多调用 3 次图片分析（`DAILY_ANALYSIS_LIMIT`）。
-- 前端应为本机用户生成 `clientId` 并保存在 `localStorage`。
-- 服务端应根据 `clientId` 记录调用次数，并持久保存用量记录：
+- 同一个用户 24 小时内最多调用 3 次图片分析（`DAILY_ANALYSIS_LIMIT`）。
+- 用户的认定方式：
+  - 原版：前端为本机生成 `clientId` 并保存在 `localStorage`，服务端按 `clientId` 计次。
+  - Next.js 版：必须登录才能分析，服务端从登录 cookie 中校验用户身份，按账号计次，不接受前端传来的标识。
+- 服务端应持久保存用量记录：
   - 原版：保存在本地文件 `.analysis-usage.json`。
   - Next.js 版：配置 Upstash Redis 时保存在 Redis；未配置时保存在 `nextjs/.data/usage.json`。
 - 用量记录文件不应上传到 GitHub。
@@ -168,8 +170,45 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
   - 总重量
   - 食物项数量
   - 保存时间
-- 用户应能清空历史记录。
-- 当前版本历史记录保存在浏览器 `localStorage`。
+- 用户应能清空历史记录。Next.js 版清空前需要二次确认。
+- 存储位置：
+  - 原版：浏览器 `localStorage`，最多保留 8 条。
+  - Next.js 版：保存到用户账号（Supabase），换设备登录也能看到；首页显示最近 8 条。保存记录需要登录。
+- Next.js 版：用户第一次登录时，应自动把这台设备上旧版本保存在 `localStorage` 的记录导入账号，只导入一次。
+
+### 6.9 用户账号（仅 Next.js 版）
+
+- 用户应能用 Google 账号登录。
+- 用户应能用邮箱登录：输入邮箱后收到登录链接，在同一个浏览器里打开即可登录。
+  - 当前限制：Supabase 自带邮件服务只发给项目团队成员，接入自定义 SMTP 后才对所有用户开放。
+  - 目标：接入自定义 SMTP 后改为 6 位验证码登录。
+- 分析照片、保存记录需要登录；未登录时点击这两个功能应弹出登录框，并说明原因。
+- 拍照、上传、手动添加食物、查看隐私政策不需要登录。
+- 页面应显示当前登录的邮箱，并提供“退出”。
+- 登录状态应在页面刷新后保留，并自动续期。
+- 用户只能读取、保存、删除自己的记录（数据库 Row Level Security 保证）。
+
+### 6.10 热量统计（仅 Next.js 版）
+
+- 登录用户可以在 `/stats` 查看最近 7 天的统计：
+  - 今日热量。
+  - 7 日平均（只算有记录的天）。
+  - 7 日记录的餐数。
+  - 每日热量柱状图；悬停或键盘聚焦到柱子上显示日期、热量、餐数。
+  - 按天列出每一餐的热量、食物名称和时间。
+- 未登录访问时，提示登录并提供返回首页的链接。
+
+### 6.11 隐私政策与服务条款（仅 Next.js 版）
+
+- 提供英文的 `/privacy` 和 `/terms` 页面，Google 登录的授权页面要求必须有这两个页面。
+- 隐私政策应如实说明：
+  - 收集哪些数据。
+  - 照片发送给 Google Gemini、不在我们这边保存。
+  - 使用了哪些第三方服务。
+  - cookie 只用于保持登录。
+  - 怎么删除数据。
+- 服务条款应说明结果仅为估算，不构成医疗或营养建议。
+- 联系邮箱：helenc881223@gmail.com。
 
 ## 7. 非功能需求
 
@@ -182,14 +221,15 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 ### 7.2 安全
 
 - API Key 不得写入前端代码。
-- `.env`、`.env.local`、`.analysis-usage.json`、`.nutrition-cache.json`、`nextjs/.data/` 必须加入 `.gitignore`。
+- `.env`、`.env.local`、`.analysis-usage.json`、`.nutrition-cache.json`、`nextjs/.data/`、`nextjs/.vercel/` 必须加入 `.gitignore`。
 - 服务端应限制请求体大小。
-- 当前原型不应收集用户真实身份信息。
+- 原版不收集用户真实身份信息。Next.js 版只收集登录所需的邮箱（使用 Google 登录时还有名字和头像），以及用户主动保存的餐食记录。
+- Next.js 版：存放用户数据的数据表必须开启 Row Level Security；前端只能使用 Supabase 的 publishable key。
 
 ### 7.3 可用性
 
 - 当相机不可用时，应提示用户改用上传照片。
-- 当图片识别失败时，应提供可编辑的模拟结果，避免流程中断。
+- 当图片识别失败时，应提供可编辑的模拟结果，避免流程中断。但 Next.js 版在未登录、次数用完时不显示模拟结果，而是直接说明原因，免得用户把模拟数据当真。
 - 所有 AI 结果应被视为估算值，允许用户修正。
 
 ### 7.4 兼容性
@@ -257,7 +297,18 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
 }
 ```
 
+未登录时返回 `401`（仅 Next.js 版）：
+
+```json
+{
+  "error": "请先登录后再分析照片。",
+  "needsLogin": true
+}
+```
+
 ### 8.3 历史记录
+
+原版（`localStorage`）：
 
 ```json
 {
@@ -272,6 +323,22 @@ Calorie Lens 是一款基于手机拍照的食物卡路里估算 App。用户可
       "kcalPer100g": 116
     }
   ]
+}
+```
+
+Next.js 版（Supabase `meals` 表的一行）：
+
+```json
+{
+  "id": "uuid",
+  "user_id": "uuid（自动填入当前登录用户）",
+  "eaten_at": "2026-10-13T18:30:00Z",
+  "total_calories": 650,
+  "total_grams": 520,
+  "foods": [
+    { "name": "米饭", "grams": 180, "kcalPer100g": 116 }
+  ],
+  "created_at": "2026-10-13T18:30:00Z"
 }
 ```
 
@@ -298,7 +365,16 @@ UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 ```
 
-也兼容 Vercel 注入的 `KV_REST_API_URL` / `KV_REST_API_TOKEN`。Next.js 版端口由 `npm run dev` 固定为 4174，不读取 `PORT`。
+也兼容 Vercel 注入的 `KV_REST_API_URL` / `KV_REST_API_TOKEN`。
+
+Next.js 版登录和数据库需要（Vercel 的 Supabase 集成会自动注入）：
+
+```text
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+```
+
+Next.js 版端口由 `npm run dev` 固定为 4174，不读取 `PORT`。
 
 API Key 获取地址：
 
@@ -315,21 +391,27 @@ USDA:   https://fdc.nal.usda.gov/api-key-signup/
 - API Key 无效：返回明确错误，不应暴露完整密钥。
 - 模型返回非 JSON：服务端应返回识别失败，前端回退到模拟结果。
 - 用户重新拍照或上传：旧标注必须清空。
+- 登录过期（仅 Next.js 版）：分析接口返回 401，前端重新弹出登录框。
+- 邮件登录链接在另一个浏览器里打开（仅 Next.js 版）：登录失败，跳回首页并带 `?authError=1`。
 
 ## 11. 当前版本限制
 
 - 体积和重量估算仍依赖视觉模型推断，不能保证精确。
 - 已接入 USDA FoodData Central；数据库数值更可靠，但视觉识别与数据库条目匹配仍可能存在偏差。当前匹配只按关键词命中数打分，会出现明显错配，例如 “steamed broccoli florets” 匹配到 “Oysters, steamed”。
-- 每日限制基于本机 `clientId`，不是账号级别，清除浏览器数据会重置。
-- 原版用量记录存储在本地文件，不适合多服务器部署；Next.js 版配置 Redis 后可解决。
-- 原版发布在 GitHub Pages 上时没有后端，线上只能使用模拟结果；需要真实识别时应使用 Next.js 版部署。
-- 历史记录只保存在浏览器本地，换设备后不可同步。
-- 当前没有用户登录、云端数据库和支付系统。
+- 原版的每日限制基于本机 `clientId`，清除浏览器数据会重置；Next.js 版已改为按账号计次。
+- 原版用量记录存储在本地文件，不适合多服务器部署；Next.js 版使用 Redis。
+- 原版发布在 GitHub Pages 上时没有后端，线上只能使用模拟结果；需要真实识别时应使用 Next.js 版。
+- 原版历史记录只保存在浏览器本地；Next.js 版已支持云端同步。
+- Next.js 版的邮箱登录目前只对 Supabase 项目团队成员可用，其他用户只能用 Google 登录，要等接入自定义 SMTP 后才对所有人开放。
+- Next.js 版还没有 App 内删除账号功能，用户需要发邮件申请。
+- 还没有支付系统。
 
 ## 12. 后续迭代建议
 
 - 扩展中国食物成分表或自建中餐营养数据库，提高中式混合菜匹配率。
-- 增加用户账号和云端历史同步。
+- ~~增加用户账号和云端历史同步。~~ Next.js 版已完成（Supabase）。
+- 自定义域名 + 自定义 SMTP，对所有用户开放邮箱验证码登录。
+- App 内删除账号功能。
 - 增加营养素拆分：蛋白质、脂肪、碳水。
 - 增加餐别分类：早餐、午餐、晚餐、加餐。
 - 增加一键确认和批量编辑。
@@ -338,7 +420,7 @@ USDA:   https://fdc.nal.usda.gov/api-key-signup/
 - 增加会员或付费策略，与每日分析次数限制联动。
 - ~~上线时将本地限额替换为数据库或 Redis 限额。~~ Next.js 版已支持 Redis 限额。
 - 改进 USDA 匹配打分，减少错配（如加入食物类别校验、同义词表）。
-- 增加账号后，可接入 Supabase（Auth + Postgres）统一承担登录、云端历史和限额存储。
+- 可以考虑把限额和 USDA 缓存也搬到 Supabase，减少一个服务（Upstash）。
 
 ## 13. 验收标准
 
@@ -353,3 +435,12 @@ USDA:   https://fdc.nal.usda.gov/api-key-signup/
 - 用户能编辑食物名称、重量、热量密度。
 - 用户能拖动图片上的食物标注。
 - 用户能保存记录并在历史区看到结果。
+
+Next.js 版额外验收：
+
+- 用户能用 Google 账号登录，页面显示登录邮箱；退出后恢复为未登录状态。
+- 未登录时点“分析照片”或“保存记录”会弹出登录框。
+- 同一账号在另一台设备登录后能看到之前保存的记录。
+- 一个用户看不到、也删不掉其他用户的记录。
+- `/stats` 正确显示最近 7 天的统计。
+- `/privacy` 和 `/terms` 可以公开访问。
