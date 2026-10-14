@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import AuthPanel from "./AuthPanel";
 import FoodItem from "./FoodItem";
 import FoodTag from "./FoodTag";
 import {
@@ -11,32 +13,17 @@ import {
   mealTotals,
   mockAnalyzePlate
 } from "@/lib/meal";
-
-const historyKey = "calorie-lens-history";
-const clientIdKey = "calorie-lens-client-id";
-
-function readHistory() {
-  try {
-    return JSON.parse(localStorage.getItem(historyKey)) || [];
-  } catch {
-    return [];
-  }
-}
-
-function readClientId() {
-  let clientId = localStorage.getItem(clientIdKey);
-  if (!clientId) {
-    clientId = crypto.randomUUID();
-    localStorage.setItem(clientIdKey, clientId);
-  }
-  return clientId;
-}
+import { deleteAllMeals, fetchRecentMeals, formatMealTime, importLegacyHistory, insertMeal } from "@/lib/meals";
+import { useSupabaseUser } from "@/lib/use-supabase-user";
 
 export default function CalorieLens() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const overlayRef = useRef(null);
-  const clientIdRef = useRef("");
+
+  const { supabase, user, ready: authReady } = useSupabaseUser();
+  const [authReason, setAuthReason] = useState(null);
+  const [confirmingClear, setConfirmingClear] = useState(false);
 
   const [cameraOn, setCameraOn] = useState(false);
   const [photo, setPhoto] = useState(null);
@@ -49,16 +36,40 @@ export default function CalorieLens() {
 
   const totals = mealTotals(foods);
 
-  useEffect(() => {
-    // localStorage 只在浏览器里有，放在 effect 里读，避免服务端渲染报错。
-    clientIdRef.current = readClientId();
-    setHistory(readHistory());
-    return () => stopCamera();
-  }, []);
+  useEffect(() => () => stopCamera(), []);
 
-  function updateHistory(next) {
-    setHistory(next);
-    localStorage.setItem(historyKey, JSON.stringify(next.slice(0, 8)));
+  useEffect(() => {
+    if (!supabase || !user) {
+      setHistory([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const imported = await importLegacyHistory(supabase, user.id);
+        const meals = await fetchRecentMeals(supabase);
+        if (cancelled) return;
+        setHistory(meals);
+        if (imported) setStatus(`已导入 ${imported} 条本机记录`);
+      } catch (error) {
+        if (!cancelled) alert(`读取历史记录失败：${error.message}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase, user]);
+
+  function requireLogin(reason) {
+    if (user) return true;
+    setAuthReason(reason);
+    return false;
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    setConfirmingClear(false);
   }
 
   function stopCamera() {
@@ -136,6 +147,7 @@ export default function CalorieLens() {
       alert("请先拍照或上传照片。");
       return;
     }
+    if (!requireLogin("登录后即可分析照片，每天 3 次。")) return;
 
     setAnalyzing(true);
     setStatus("识别中");
@@ -146,12 +158,23 @@ export default function CalorieLens() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           imageDataUrl: photo.src,
-          fistVolumeMl,
-          clientId: clientIdRef.current
+          fistVolumeMl
         })
       });
       const result = await response.json();
 
+      // 登录失效和次数用完不是识别故障，直接提示，不用模拟结果糊弄过去。
+      if (response.status === 401) {
+        setStatus("等待分析");
+        setAuthReason("登录已过期，请重新登录。");
+        return;
+      }
+      if (response.status === 429) {
+        const resetAt = result.resetAt ? `，${formatMealTime(result.resetAt)} 后恢复` : "";
+        setStatus("次数已用完");
+        alert(`${result.error}${resetAt}`);
+        return;
+      }
       if (!response.ok) {
         throw new Error(result.error || "图片识别失败。");
       }
@@ -206,18 +229,12 @@ export default function CalorieLens() {
     setStatus(photo ? "手动校准" : "手动输入");
   }
 
-  function saveMeal() {
+  async function saveMeal() {
     if (!foods.length) return;
+    if (!requireLogin("登录后保存的记录会同步到你的账号，换手机也能看到。")) return;
 
-    updateHistory([
-      {
-        id: crypto.randomUUID(),
-        time: new Intl.DateTimeFormat("zh-CN", {
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit"
-        }).format(new Date()),
+    try {
+      const meal = await insertMeal(supabase, {
         totalCalories: totals.calories,
         totalGrams: totals.grams,
         foods: foods.map((food) => ({
@@ -225,10 +242,27 @@ export default function CalorieLens() {
           grams: food.grams,
           kcalPer100g: food.kcalPer100g
         }))
-      },
-      ...history
-    ]);
-    setStatus("已保存");
+      });
+      setHistory((current) => [meal, ...current].slice(0, 8));
+      setStatus("已保存");
+    } catch (error) {
+      alert(`保存失败：${error.message}`);
+    }
+  }
+
+  async function clearHistory() {
+    if (!confirmingClear) {
+      setConfirmingClear(true);
+      return;
+    }
+    try {
+      await deleteAllMeals(supabase, user.id);
+      setHistory([]);
+    } catch (error) {
+      alert(`清空失败：${error.message}`);
+    } finally {
+      setConfirmingClear(false);
+    }
   }
 
   function resetApp() {
@@ -265,6 +299,33 @@ export default function CalorieLens() {
             <span aria-hidden="true">↻</span>
           </button>
         </header>
+
+        <div className="account-bar">
+          {!authReady ? (
+            <span>正在检查登录状态...</span>
+          ) : !supabase ? (
+            <span>登录功能未配置</span>
+          ) : user ? (
+            <>
+              <span className="account-email" title={user.email}>
+                {user.email}
+              </span>
+              <Link className="text-button" href="/stats">
+                热量统计
+              </Link>
+              <button className="text-button" type="button" onClick={signOut}>
+                退出
+              </button>
+            </>
+          ) : (
+            <>
+              <span>登录后可分析照片，记录会同步到云端。</span>
+              <button className="text-button" type="button" onClick={() => setAuthReason("")}>
+                登录
+              </button>
+            </>
+          )}
+        </div>
 
         <div
           className={photo ? "viewfinder has-photo" : "viewfinder"}
@@ -393,9 +454,18 @@ export default function CalorieLens() {
         <section className="history-panel" aria-label="历史记录">
           <div className="section-heading">
             <h2>最近记录</h2>
-            <button className="text-button" type="button" onClick={() => updateHistory([])}>
-              清空
-            </button>
+            {user && history.length > 0 && (
+              <div className="history-actions">
+                {confirmingClear && (
+                  <button className="text-button" type="button" onClick={() => setConfirmingClear(false)}>
+                    取消
+                  </button>
+                )}
+                <button className="text-button danger" type="button" onClick={clearHistory}>
+                  {confirmingClear ? "确认删除全部记录" : "清空"}
+                </button>
+              </div>
+            )}
           </div>
           <div className="history-list">
             {history.length ? (
@@ -407,15 +477,21 @@ export default function CalorieLens() {
                       {meal.totalGrams}g · {meal.foods.length} 项
                     </span>
                   </div>
-                  <time>{meal.time}</time>
+                  <time dateTime={meal.eatenAt}>{formatMealTime(meal.eatenAt)}</time>
                 </article>
               ))
             ) : (
-              <p className="history-empty">保存后会显示最近的用餐记录。</p>
+              <p className="history-empty">
+                {user ? "保存后会显示最近的用餐记录。" : "登录后，保存的用餐记录会显示在这里。"}
+              </p>
             )}
           </div>
         </section>
       </section>
+
+      {authReason !== null && supabase && (
+        <AuthPanel supabase={supabase} reason={authReason} onClose={() => setAuthReason(null)} />
+      )}
     </main>
   );
 }

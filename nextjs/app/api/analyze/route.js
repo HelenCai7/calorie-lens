@@ -1,5 +1,6 @@
 import { aiProvider, geminiModel, openaiModel, usdaConfigured } from "@/lib/config";
 import { checkDailyLimit, recordAnalysis } from "@/lib/rate-limit";
+import { getSignedInUserId } from "@/lib/supabase/server";
 import { enrichFoodsWithUsda } from "@/lib/usda";
 import { analyzeImage, clampFood } from "@/lib/vision";
 
@@ -22,6 +23,11 @@ async function readJsonBody(request) {
 }
 
 export async function POST(request) {
+  const userId = await getSignedInUserId();
+  if (!userId) {
+    return Response.json({ error: "请先登录后再分析照片。", needsLogin: true }, { status: 401 });
+  }
+
   let body;
   try {
     body = await readJsonBody(request);
@@ -34,7 +40,8 @@ export async function POST(request) {
   }
 
   try {
-    const limitCheck = await checkDailyLimit(body.clientId);
+    // 按登录账号计次，不再信任浏览器传来的 clientId。
+    const limitCheck = await checkDailyLimit(`user_${userId}`);
     if (!limitCheck.allowed) {
       return Response.json(limitCheck, { status: limitCheck.status });
     }
