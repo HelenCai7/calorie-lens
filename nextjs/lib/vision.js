@@ -141,8 +141,31 @@ export function clampFood(food, index) {
   };
 }
 
-function httpError(message, status) {
-  return Object.assign(new Error(message), { status });
+function httpError(message, status, extra = {}) {
+  return Object.assign(new Error(message), { status, ...extra });
+}
+
+// 模型服务自身的繁忙或限额错误。和“用户今天的 3 次用完了”是两回事，路由会单独处理。
+const busyStatuses = new Set([429, 500, 502, 503, 504]);
+// 这些是临时故障，通常很快返回，值得自动重试。
+const retryStatuses = new Set([500, 503]);
+const retryDelaysMs = [2000, 4000];
+
+function providerError(provider, payload, status) {
+  const message = payload.error?.message || `${provider} 图片识别失败。`;
+  return busyStatuses.has(status)
+    ? httpError(message, status, { aiBusy: true, aiQuota: status === 429 })
+    : httpError(message, status);
+}
+
+async function fetchWithRetry(url, options) {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(url, options);
+    if (response.ok || !retryStatuses.has(response.status) || attempt >= retryDelaysMs.length) {
+      return response;
+    }
+    await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
+  }
 }
 
 async function analyzeWithOpenAI(imageDataUrl, fistVolumeMl) {
@@ -150,7 +173,7 @@ async function analyzeWithOpenAI(imageDataUrl, fistVolumeMl) {
     throw httpError("还没有配置 OPENAI_API_KEY。", 501);
   }
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetchWithRetry("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -181,7 +204,7 @@ async function analyzeWithOpenAI(imageDataUrl, fistVolumeMl) {
 
   const payload = await response.json();
   if (!response.ok) {
-    throw httpError(payload.error?.message || "OpenAI 图片识别失败。", response.status);
+    throw providerError("OpenAI", payload, response.status);
   }
 
   return JSON.parse(extractOpenAIText(payload));
@@ -201,7 +224,7 @@ async function analyzeWithGemini(imageDataUrl, fistVolumeMl) {
   const modelPath = geminiModel.startsWith("models/") ? geminiModel : `models/${geminiModel}`;
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/${modelPath}:generateContent?key=${encodeURIComponent(geminiKey)}`;
 
-  const response = await fetch(endpoint, {
+  const response = await fetchWithRetry(endpoint, {
     method: "POST",
     headers: {
       "content-type": "application/json"
@@ -231,7 +254,7 @@ async function analyzeWithGemini(imageDataUrl, fistVolumeMl) {
 
   const payload = await response.json();
   if (!response.ok) {
-    throw httpError(payload.error?.message || "Gemini 图片识别失败。", response.status);
+    throw providerError("Gemini", payload, response.status);
   }
 
   return JSON.parse(extractGeminiText(payload));

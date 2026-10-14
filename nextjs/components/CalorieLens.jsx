@@ -169,6 +169,11 @@ export default function CalorieLens() {
         setAuthReason("登录已过期，请重新登录。");
         return;
       }
+      if (result.code === "ai_busy") {
+        setStatus("服务繁忙");
+        alert(result.error);
+        return;
+      }
       if (response.status === 429) {
         const resetAt = result.resetAt ? `，${formatMealTime(result.resetAt)} 后恢复` : "";
         setStatus("次数已用完");
