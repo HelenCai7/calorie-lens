@@ -69,6 +69,7 @@ export async function POST(request) {
       return Response.json(
         {
           code: "ai_busy",
+          quota: Boolean(error.aiQuota),
           error: error.aiQuota
             ? "AI 识别服务暂时达到使用上限，请稍后再试。如果一直失败，可能是今天的额度用完了，明天会恢复。"
             : "AI 识别服务现在太忙，请过一会儿再试。这次不计入你的每日次数。"

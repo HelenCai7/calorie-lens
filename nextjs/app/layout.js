@@ -2,7 +2,7 @@ import "./globals.css";
 
 export const metadata = {
   title: "Calorie Lens",
-  description: "拍照估算食物卡路里"
+  description: "Snap a photo of your meal to estimate calories. 拍照估算食物卡路里。"
 };
 
 export const viewport = {

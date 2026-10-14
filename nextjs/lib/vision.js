@@ -42,6 +42,19 @@ function extractGeminiText(payload) {
   return "";
 }
 
+const foodFields = [
+  "name",
+  "nameEn",
+  "foodCore",
+  "usdaQuery",
+  "grams",
+  "kcalPer100g",
+  "confidence",
+  "left",
+  "top",
+  "notes"
+];
+
 function analysisSchema({ strict }) {
   const objectBase = strict ? { additionalProperties: false } : {};
   return {
@@ -56,9 +69,11 @@ function analysisSchema({ strict }) {
         items: {
           type: "object",
           ...objectBase,
-          required: ["name", "usdaQuery", "grams", "kcalPer100g", "confidence", "left", "top", "notes"],
+          required: foodFields,
           properties: {
             name: { type: "string" },
+            nameEn: { type: "string" },
+            foodCore: { type: "string" },
             usdaQuery: { type: "string" },
             grams: { type: "number" },
             kcalPer100g: { type: "number" },
@@ -85,9 +100,11 @@ function geminiAnalysisSchema() {
         type: "ARRAY",
         items: {
           type: "OBJECT",
-          required: ["name", "usdaQuery", "grams", "kcalPer100g", "confidence", "left", "top", "notes"],
+          required: foodFields,
           properties: {
             name: { type: "STRING" },
+            nameEn: { type: "STRING" },
+            foodCore: { type: "STRING" },
             usdaQuery: { type: "STRING" },
             grams: { type: "NUMBER" },
             kcalPer100g: { type: "NUMBER" },
@@ -112,7 +129,11 @@ function analysisPrompt(fistVolumeMl) {
     `如果画面里有拳头，把它当作体积参照；用户设置的拳头体积约为 ${fistVolumeMl} ml。`,
     "请尽量识别盘子中每个独立食物，不要把米饭、肉、蔬菜混成一个条目。",
     "估算每项食物的克重、每100g热量、置信度，以及标注在图片中的位置。",
-    "每项食物还要返回 usdaQuery：用于 USDA FoodData Central 搜索的简短英文标准名称，必须包含生熟状态和主要烹饪方式，例如 cooked white rice 或 grilled chicken breast。",
+    "每项食物的名称字段：",
+    "- name：简体中文名称，简短常用，例如“米饭”“西兰花”“烤鸡胸肉”。",
+    "- nameEn：对应的简短英文名称，例如 White rice、Broccoli、Grilled chicken breast。",
+    "- foodCore：最核心的食物英文单词，单数、小写，不带烹饪方式和形容词，例如 rice、broccoli、chicken breast、mozzarella、sweet potato。",
+    "- usdaQuery：按 USDA FoodData Central 条目的写法给出搜索词，核心食物在前、修饰词在后、用逗号分隔，并写明生熟状态或烹饪方式，例如 rice, white, cooked / broccoli, cooked / chicken breast, grilled / cheese, mozzarella / cucumber, raw。",
     "left/top 是标注左上角相对图片区域的百分比，范围 2 到 88。",
     "如果无法确定，请给出较低 confidence，并在 notes 说明需要用户手动调整。"
   ].join("\n");
@@ -128,8 +149,10 @@ export function clampFood(food, index) {
   const fallback = fallbackPositions[index % fallbackPositions.length];
 
   return {
-    name: String(food.name || "未知食物").slice(0, 24),
-    usdaQuery: String(food.usdaQuery || food.name || "").slice(0, 80),
+    name: String(food.name || "未知食物").slice(0, 30),
+    nameEn: String(food.nameEn || "").slice(0, 60),
+    foodCore: String(food.foodCore || "").slice(0, 40),
+    usdaQuery: String(food.usdaQuery || food.nameEn || food.name || "").slice(0, 80),
     grams: Math.max(1, Math.round(Number(food.grams) || 100)),
     kcalPer100g: Math.max(1, Math.round(Number(food.kcalPer100g) || 120)),
     confidence: Math.min(1, Math.max(0, Number(food.confidence) || 0.45)),

@@ -18,6 +18,7 @@ export async function checkDailyLimit(clientId) {
       allowed: false,
       status: 429,
       error: `同一个用户 24 小时内最多只能分析 ${dailyAnalysisLimit} 张图片。`,
+      limit: dailyAnalysisLimit,
       remaining: 0,
       resetAt: new Date(Math.min(...recent) + rateWindowMs).toISOString()
     };

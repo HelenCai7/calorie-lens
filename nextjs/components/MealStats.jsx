@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { LangToggle, foodDisplayName, localeFor, useI18n } from "@/lib/i18n";
 import { fetchMealsSince } from "@/lib/meals";
 import { useSupabaseUser } from "@/lib/use-supabase-user";
 
@@ -43,16 +44,24 @@ function niceMax(value) {
   return Math.ceil((value * 1.1) / step) * step;
 }
 
-const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" });
-const monthDay = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" });
-const clock = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" });
-const number = new Intl.NumberFormat("zh-CN");
-
 export default function MealStats() {
+  const { lang, setLang, t } = useI18n();
   const { supabase, user, ready } = useSupabaseUser();
   const [meals, setMeals] = useState(null);
   const [error, setError] = useState("");
   const [activeKey, setActiveKey] = useState(null);
+
+  const format = useMemo(() => {
+    const locale = localeFor(lang);
+    const weekday = new Intl.DateTimeFormat(locale, { weekday: "short" });
+    const monthDay = new Intl.DateTimeFormat(locale, { month: lang === "en" ? "short" : "numeric", day: "numeric" });
+    return {
+      weekday: (date) => weekday.format(date),
+      day: (date) => `${monthDay.format(date)} ${weekday.format(date)}`,
+      clock: (date) => new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(date),
+      number: (value) => new Intl.NumberFormat(locale).format(value)
+    };
+  }, [lang]);
 
   useEffect(() => {
     if (!supabase || !user) return;
@@ -63,21 +72,23 @@ export default function MealStats() {
       .catch((fetchError) => setError(fetchError.message));
   }, [supabase, user]);
 
+  const shell = { t, lang, setLang };
+
   if (!ready) {
-    return <StatsShell>正在检查登录状态...</StatsShell>;
+    return <StatsShell {...shell}>{t("stats.checking")}</StatsShell>;
   }
   if (!user) {
     return (
-      <StatsShell>
-        <p>登录后才能查看热量统计。</p>
+      <StatsShell {...shell}>
+        <p>{t("stats.needLogin")}</p>
         <Link className="primary-button link-button" href="/">
-          回到首页登录
+          {t("stats.goLogin")}
         </Link>
       </StatsShell>
     );
   }
-  if (error) return <StatsShell>读取记录失败：{error}</StatsShell>;
-  if (!meals) return <StatsShell>正在读取记录...</StatsShell>;
+  if (error) return <StatsShell {...shell}>{t("stats.loadFailed", { error })}</StatsShell>;
+  if (!meals) return <StatsShell {...shell}>{t("stats.loading")}</StatsShell>;
 
   const days = buildDays(meals);
   const today = days[days.length - 1];
@@ -89,28 +100,28 @@ export default function MealStats() {
   const ticks = [0, axisMax / 2, axisMax];
 
   return (
-    <StatsShell>
+    <StatsShell {...shell}>
       <div className="summary-strip">
         <div>
-          <span>今日热量</span>
-          <strong>{number.format(today.calories)} kcal</strong>
+          <span>{t("stats.today")}</span>
+          <strong>{format.number(today.calories)} kcal</strong>
         </div>
         <div>
-          <span>7 日平均（有记录的天）</span>
-          <strong>{number.format(average)} kcal</strong>
+          <span>{t("stats.average")}</span>
+          <strong>{format.number(average)} kcal</strong>
         </div>
         <div>
-          <span>7 日记录</span>
-          <strong>{meals.length} 餐</strong>
+          <span>{t("stats.mealCount")}</span>
+          <strong>{t("stats.meals", { count: meals.length })}</strong>
         </div>
       </div>
 
-      <figure className="stats-chart" aria-label="最近 7 天每日热量柱状图">
-        <figcaption>最近 7 天每日热量（kcal）</figcaption>
+      <figure className="stats-chart" aria-label={t("stats.chartLabel")}>
+        <figcaption>{t("stats.chartTitle")}</figcaption>
         <div className="chart-body">
           <div className="chart-axis" aria-hidden="true">
             {[...ticks].reverse().map((tick) => (
-              <span key={tick}>{number.format(tick)}</span>
+              <span key={tick}>{format.number(tick)}</span>
             ))}
           </div>
           <div className="chart-plot">
@@ -119,7 +130,11 @@ export default function MealStats() {
             ))}
             {days.map((day, index) => {
               const isToday = index === days.length - 1;
-              const label = `${monthDay.format(day.date)} ${weekday.format(day.date)}：${number.format(day.calories)} kcal，${day.meals.length} 餐`;
+              const label = t("stats.barLabel", {
+                date: format.day(day.date),
+                calories: format.number(day.calories),
+                count: day.meals.length
+              });
               return (
                 <div
                   key={day.key}
@@ -133,7 +148,7 @@ export default function MealStats() {
                 >
                   {isToday && day.calories > 0 && (
                     <span className="chart-direct-label" style={{ bottom: `${(day.calories / axisMax) * 100}%` }}>
-                      {number.format(day.calories)}
+                      {format.number(day.calories)}
                     </span>
                   )}
                   <div className="chart-bar" style={{ height: `${(day.calories / axisMax) * 100}%` }} />
@@ -143,11 +158,9 @@ export default function MealStats() {
                       role="tooltip"
                       style={{ bottom: `calc(${Math.min(100, (day.calories / axisMax) * 100)}% + 8px)` }}
                     >
-                      <strong>
-                        {monthDay.format(day.date)} {weekday.format(day.date)}
-                      </strong>
-                      <span>{number.format(day.calories)} kcal</span>
-                      <span>{day.meals.length} 餐</span>
+                      <strong>{format.day(day.date)}</strong>
+                      <span>{format.number(day.calories)} kcal</span>
+                      <span>{t("stats.meals", { count: day.meals.length })}</span>
                     </div>
                   )}
                 </div>
@@ -157,55 +170,59 @@ export default function MealStats() {
           <span aria-hidden="true" />
           <div className="chart-labels" aria-hidden="true">
             {days.map((day, index) => (
-              <span key={day.key}>{index === days.length - 1 ? "今天" : weekday.format(day.date)}</span>
+              <span key={day.key}>{index === days.length - 1 ? t("stats.todayShort") : format.weekday(day.date)}</span>
             ))}
           </div>
         </div>
       </figure>
 
-      <section className="history-panel" aria-label="每日明细">
-        <h2>每日明细</h2>
+      <section className="history-panel" aria-label={t("stats.daily")}>
+        <h2>{t("stats.daily")}</h2>
         {loggedDays.length ? (
           [...loggedDays].reverse().map((day) => (
             <div className="stats-day" key={day.key}>
               <div className="section-heading">
-                <strong>
-                  {monthDay.format(day.date)} {weekday.format(day.date)}
-                </strong>
-                <span>{number.format(day.calories)} kcal</span>
+                <strong>{format.day(day.date)}</strong>
+                <span>{format.number(day.calories)} kcal</span>
               </div>
               {day.meals.map((meal) => (
                 <article className="history-item" key={meal.id}>
                   <div>
-                    <strong>{number.format(meal.totalCalories)} kcal</strong>
-                    <span>{meal.foods.map((food) => food.name).join("、") || `${meal.totalGrams}g`}</span>
+                    <strong>{format.number(meal.totalCalories)} kcal</strong>
+                    <span>
+                      {meal.foods.map((food) => foodDisplayName(food, lang)).join(t("stats.listSeparator")) ||
+                        `${meal.totalGrams}g`}
+                    </span>
                   </div>
-                  <time dateTime={meal.eatenAt}>{clock.format(new Date(meal.eatenAt))}</time>
+                  <time dateTime={meal.eatenAt}>{format.clock(new Date(meal.eatenAt))}</time>
                 </article>
               ))}
             </div>
           ))
         ) : (
-          <p className="history-empty">最近 7 天还没有记录。拍一餐、保存后就会出现在这里。</p>
+          <p className="history-empty">{t("stats.empty")}</p>
         )}
       </section>
     </StatsShell>
   );
 }
 
-function StatsShell({ children }) {
+function StatsShell({ t, lang, setLang, children }) {
   return (
     <main className="stats-shell">
       <section className="analysis-panel">
         <header className="topbar">
           <div>
             <p className="eyebrow">Calorie Lens</p>
-            <h1>热量统计</h1>
+            <h1>{t("stats.title")}</h1>
           </div>
-          <Link className="text-button" href="/">
-            ← 返回拍照
-          </Link>
+          <div className="topbar-actions">
+            <LangToggle lang={lang} onChange={setLang} />
+          </div>
         </header>
+        <Link className="text-button back-link" href="/">
+          {t("stats.back")}
+        </Link>
         {children}
       </section>
     </main>

@@ -1,14 +1,14 @@
 export const foodLibrary = [
-  { name: "米饭", kcalPer100g: 116, density: 0.78 },
-  { name: "鸡胸肉", kcalPer100g: 165, density: 0.95 },
-  { name: "煎蛋", kcalPer100g: 196, density: 0.82 },
-  { name: "西兰花", kcalPer100g: 34, density: 0.36 },
-  { name: "牛油果", kcalPer100g: 160, density: 0.64 },
-  { name: "三文鱼", kcalPer100g: 208, density: 0.92 },
-  { name: "面条", kcalPer100g: 138, density: 0.68 },
-  { name: "土豆", kcalPer100g: 77, density: 0.72 },
-  { name: "苹果", kcalPer100g: 52, density: 0.61 },
-  { name: "自定义食物", kcalPer100g: 120, density: 0.7 }
+  { name: "米饭", nameEn: "White rice", kcalPer100g: 116, density: 0.78 },
+  { name: "鸡胸肉", nameEn: "Chicken breast", kcalPer100g: 165, density: 0.95 },
+  { name: "煎蛋", nameEn: "Fried egg", kcalPer100g: 196, density: 0.82 },
+  { name: "西兰花", nameEn: "Broccoli", kcalPer100g: 34, density: 0.36 },
+  { name: "牛油果", nameEn: "Avocado", kcalPer100g: 160, density: 0.64 },
+  { name: "三文鱼", nameEn: "Salmon", kcalPer100g: 208, density: 0.92 },
+  { name: "面条", nameEn: "Noodles", kcalPer100g: 138, density: 0.68 },
+  { name: "土豆", nameEn: "Potato", kcalPer100g: 77, density: 0.72 },
+  { name: "苹果", nameEn: "Apple", kcalPer100g: 52, density: 0.61 },
+  { name: "自定义食物", nameEn: "Custom food", kcalPer100g: 120, density: 0.7 }
 ];
 
 export const colors = ["#287a63", "#c46b2f", "#466ca6", "#bf4f5f", "#6d6a2e", "#6c58a8"];
@@ -27,18 +27,19 @@ export function mealTotals(foods) {
   };
 }
 
-export function confidenceLabel(value) {
-  if (value >= 0.72) return "较高";
-  if (value >= 0.46) return "中等";
-  return "较低";
+// 返回 lib/i18n.js 里的翻译 key，由界面按当前语言显示。
+export function confidenceStatusKey(value) {
+  if (value >= 0.72) return "status.confidenceHigh";
+  if (value >= 0.46) return "status.confidenceMedium";
+  return "status.confidenceLow";
 }
 
-export function nutritionSourceLabel(food) {
-  if (food.nutritionSource === "usda") return `USDA · ${food.matchedFood}`;
-  if (food.nutritionSource === "local") return "本地参考值";
-  if (food.nutritionSource === "manual") return "手动调整";
-  if (food.nutritionSource === "renamed") return "名称已修改，热量值待确认";
-  return "Gemini 估算";
+export function nutritionSourceLabel(food, t) {
+  if (food.nutritionSource === "usda") return t("source.usda", { matched: food.matchedFood });
+  if (food.nutritionSource === "local") return t("source.local");
+  if (food.nutritionSource === "manual") return t("source.manual");
+  if (food.nutritionSource === "renamed") return t("source.renamed");
+  return t("source.model");
 }
 
 export function mockAnalyzePlate(fistVolumeMl) {
@@ -53,6 +54,7 @@ export function mockAnalyzePlate(fistVolumeMl) {
   return picks.map((food, index) => ({
     id: crypto.randomUUID(),
     name: food.name,
+    nameEn: food.nameEn,
     kcalPer100g: food.kcalPer100g,
     nutritionSource: "local",
     matchedFood: "",

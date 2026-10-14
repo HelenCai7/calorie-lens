@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { foodDisplayName } from "@/lib/i18n";
 import { formatCalories, nutritionSourceLabel } from "@/lib/meal";
 
 function toPositive(value) {
@@ -17,24 +18,30 @@ function useNumberDraft(value) {
   return [draft, setDraft];
 }
 
-export default function FoodItem({ food, color, onChange, onDelete }) {
+export default function FoodItem({ food, color, lang, t, onChange, onDelete }) {
   const [gramsDraft, setGramsDraft] = useNumberDraft(food.grams);
   const [kcalDraft, setKcalDraft] = useNumberDraft(food.kcalPer100g);
-  const sourceLabel = nutritionSourceLabel(food);
+  const sourceLabel = nutritionSourceLabel(food, t);
 
   return (
     <article className="food-item">
       <div className="food-marker" style={{ background: color }} />
       <div className="food-main">
         <label>
-          食物
+          {t("food.name")}
           <input
             className="food-name-input"
             type="text"
             autoComplete="off"
-            value={food.name}
+            value={foodDisplayName(food, lang)}
             onChange={(event) =>
-              onChange({ name: event.target.value, nutritionSource: "renamed", matchedFood: "", fdcId: null })
+              // 只改当前语言的名称；另一种语言的旧名称已经对不上了，清空后会自动显示这个新名称。
+              onChange({
+                ...(lang === "en" ? { nameEn: event.target.value, name: "" } : { name: event.target.value, nameEn: "" }),
+                nutritionSource: "renamed",
+                matchedFood: "",
+                fdcId: null
+              })
             }
           />
           <small className="nutrition-source" title={food.matchedFood || sourceLabel}>
@@ -42,7 +49,7 @@ export default function FoodItem({ food, color, onChange, onDelete }) {
           </small>
         </label>
         <label>
-          估计重量
+          {t("food.weight")}
           <div className="number-field">
             <input
               className="grams-input"
@@ -59,7 +66,7 @@ export default function FoodItem({ food, color, onChange, onDelete }) {
           </div>
         </label>
         <label>
-          热量密度
+          {t("food.density")}
           <div className="number-field">
             <input
               className="kcal-input"
@@ -79,7 +86,7 @@ export default function FoodItem({ food, color, onChange, onDelete }) {
       <div className="food-meta">
         <strong className="calories-output">{formatCalories(food.grams, food.kcalPer100g)} kcal</strong>
         <span className="density-output">{food.kcalPer100g} kcal/100g</span>
-        <button className="icon-button delete-food" type="button" title="删除" onClick={onDelete}>
+        <button className="icon-button delete-food" type="button" title={t("food.delete")} onClick={onDelete}>
           ×
         </button>
       </div>

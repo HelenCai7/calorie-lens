@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { foodDisplayName } from "@/lib/i18n";
 import { formatCalories } from "@/lib/meal";
 
-export default function FoodTag({ food, color, layerRef, onMove }) {
+export default function FoodTag({ food, color, lang, layerRef, onMove }) {
   const [dragging, setDragging] = useState(false);
 
   function handlePointerDown(event) {
@@ -36,7 +37,7 @@ export default function FoodTag({ food, color, layerRef, onMove }) {
       onPointerUp={stopDrag}
       onPointerCancel={stopDrag}
     >
-      <strong>{food.name}</strong>
+      <strong>{foodDisplayName(food, lang)}</strong>
       <span>
         {food.grams}g · {formatCalories(food.grams, food.kcalPer100g)} kcal
       </span>

@@ -64,16 +64,24 @@ Calorie Track/
       FoodItem.jsx        # 单个食物条目的编辑
       FoodTag.jsx         # 图片上可拖动的食物标注
       LegalPage.jsx       # 隐私政策、服务条款的页面外壳
+      Toasts.jsx          # 页面内提示（代替 alert）
+      AnalyzeProgress.jsx # 识别时叠在照片上的进度条
     lib/
       config.js           # 环境变量读取
       vision.js           # prompt、schema、Gemini / OpenAI 调用、clampFood
-      usda.js             # USDA 搜索、打分、缓存
+      usda.js             # USDA 搜索（两步）、缓存
+      usda-match.js       # USDA 候选打分，纯函数，便于单独测试
       rate-limit.js       # 24 小时滚动窗口次数限制
       store.js            # 存储抽象：Redis 或本地文件
       meal.js             # 前端共用：食物库、热量计算、图片压缩、模拟结果
       meals.js            # 餐食记录的读写、旧本地历史导入
       use-supabase-user.js # 前端登录状态 hook
+      use-toasts.js       # 页面内提示的状态
+      i18n.js             # 界面中英文：翻译表、useI18n()、语言切换按钮、食物名称取值
       legal.js            # 法律页面的联系邮箱、更新日期
+    scripts/
+      generate-icons.mjs  # 生成 App 图标（app/icon.svg、app/apple-icon.png、public/icons/*）
+    public/icons/         # PWA 图标 192 / 512 / maskable 512
       supabase/
         env.js            # Supabase 网址和 publishable key
         client.js         # 浏览器端 Supabase 客户端
@@ -191,6 +199,37 @@ Next.js 版额外的页面和区域：
 - 三个数字：今日热量、7 日平均（只算有记录的天）、7 日记录餐数。
 - 柱状图：每天一根柱，颜色 `#1f8a68`（主题绿 `#287a63` 的饱和度不够，图表里显得发灰，用数据可视化检查脚本验证过对比度和饱和度）。柱宽不超过 24px，顶端 4px 圆角，只给“今天”这一根直接标数值；每根柱子都可以悬停或用键盘聚焦，显示日期、热量、餐数。纵轴最大值取整到 250 / 500 的倍数。
 - 每日明细：按天列出每一餐，同时作为图表的表格视图。
+
+### 5.2.4 界面语言（仅 Next.js 版）
+
+- 所有界面文字都在 `lib/i18n.js` 的 `messages.zh` / `messages.en` 里，组件通过 `const { lang, setLang, t } = useI18n()` 取用。
+  - 支持 `{name}` 占位符，比如 `t("toast.saved", { calories: 520 })`。
+  - 新增文字时**两种语言都要加**；英文缺失时会退回中文。
+- 标题栏右侧有“中文 / EN”切换按钮，首页和统计页都有。
+  - 选择保存在 localStorage 的 `calorie-lens-lang`，所有标签页同步。
+  - 没选过时按浏览器语言：中文系统用中文，其他用英文。
+- 首次渲染（包括服务端预渲染）固定用中文，挂载后再换成用户的语言，避免水合不一致。所以英文用户打开页面时，会有一瞬间先看到中文。
+- **状态文字存翻译 key 而不是文字本身**（如 `statusKey = "status.analyzing"`），切换语言后马上变；已经弹出的提示不会重新翻译。
+- 日期、数字按语言格式化（`localeFor(lang)` → `zh-CN` / `en-US`）。
+- `<html lang>` 跟着切换。
+- 服务端返回的错误文字仍是中文。前端对 401、429、`ai_busy` 用自己的翻译文字；只有未预料的错误会显示服务端原文。
+- **食物名称**：模型同时返回 `name`（中文）和 `nameEn`（英文），界面只显示当前语言的那个（`foodDisplayName`）；该语言没有名称时退回另一种。
+  - 用户在某种语言下改名，会清空另一种语言的旧名称，因为旧名称已经对不上了。
+  - 保存记录时 `foods` 里同时存 `name` 和 `nameEn`。
+- 隐私政策和服务条款页面只有英文。
+
+### 5.2.5 提示和识别进度（仅 Next.js 版）
+
+- **页面内提示**（`Toasts` + `useToasts`）代替浏览器 `alert`：
+  - 固定在页面底部，最多同时 3 条。
+  - 普通提示 4 秒消失，错误提示 8 秒消失，也可以手动关闭。
+  - 错误提示用 `role="alert"`，其他用 `role="status"`。
+- **识别进度**（`AnalyzeProgress`）：识别时叠在照片上方，显示阶段文字、已用秒数和进度条。
+  - 服务端不回报真实进度，所以阶段按实测耗时推算：0 秒上传 → 2 秒识别 → 12 秒查 USDA → 28 秒提示“比平时慢”。
+  - 进度条最多走到 92%，等结果回来才消失，不假装已经完成。
+- **App 图标**：由 `scripts/generate-icons.mjs` 用 `sharp`（Next.js 自带依赖）从同一份 SVG 生成，改图案后重新运行即可。
+  - iPhone 用的 `apple-icon.png` 是满版方形，iOS 会自己加圆角。
+  - 安卓 maskable 图标把图案缩到中间安全区，因为安卓会把图标裁成各种形状。
 
 ### 5.3 图片处理
 
@@ -485,22 +524,44 @@ prompt 没有指定食物名称的语言，模型有时会返回英文名称（�
 
 ### 9.2 USDA 校准
 
-- 使用模型返回的 `usdaQuery` 搜索 USDA FoodData Central `/foods/search`，每次取 12 条。
-- 只搜索 Foundation、SR Legacy、Survey (FNDDS)，不使用品牌食品数据。
-- 能量值按营养素编号 `2048` → `2047` → `1008` 的优先级读取，单位必须是 KCAL。
-- 候选打分：命中的查询词数 × 12 + 数据类型加分（Foundation 10、SR Legacy 8、FNDDS 6）− 搜索结果排名。
-- 同一查询在同一进程内并发时只请求一次（`usdaInflight`）。
-- USDA 无匹配或暂时不可用时保留模型估算，`nutritionSource` 设为 `gemini`，不影响整次分析。
-- 查询结果默认缓存 30 天；过期时尝试刷新，刷新失败则继续使用旧数据。
+原版仍使用下面“旧规则”；Next.js 版自 2026-10-14 起使用“新规则”。
 
-**已知问题**：打分只看关键词命中数，没有校验食物类别，会出现明显错配。实测例子：
+**旧规则（原版）**：用口语化的 `usdaQuery`（如 `steamed broccoli florets`）搜索 12 条，打分 = 命中词数 × 12 + 数据类型加分 − 排名。问题：
+- 口语化搜索词让 USDA 返回的前 12 条里根本没有正确食物。比如搜蒸西兰花，返回的全是蒸海鲜。
+- 只要一个修饰词命中就能得分，于是把西兰花匹配成 "Oysters, steamed"，马苏里拉奶酪匹配成 "Melon balls"，米饭选成糯米。
 
-| usdaQuery | 匹配结果 |
-| --- | --- |
-| steamed broccoli florets | Oysters, steamed |
-| fresh mini mozzarella balls | Melon balls, frozen |
+**新规则（Next.js 版，`lib/usda-match.js` + `lib/usda.js`）**：
 
-改进方向：给核心名词（broccoli、mozzarella）更高权重，要求核心名词必须命中；或先用 USDA 的 `foodCategory` 过滤。
+1. **模型多返回两个字段**：
+   - `foodCore`：核心食物英文词，比如 `broccoli`、`chicken breast`。
+   - `usdaQuery`：USDA 条目格式的搜索词，核心在前、修饰在后，比如 `broccoli, cooked`、`cheese, mozzarella`。
+2. **搜索**：用 `usdaQuery` 搜 25 条（Foundation / SR Legacy / FNDDS）。没有任何候选包含核心词时，再只用 `foodCore` 搜一次。两次都没有，就保留模型估算值（`nutritionSource: "gemini"`）。宁可不校准，也不能校准错。
+3. **硬性条件**：候选描述必须包含 `foodCore` 的所有词（单复数归一，如 carrots → carrot）。
+4. **打分**：
+
+   | 规则 | 分值 |
+   | --- | --- |
+   | 描述以核心词开头 / 核心词在第一段 / 在第二段（如 "Cheese, mozzarella"） | +25 / +15 / +10 |
+   | 每个命中的搜索词 | +8 |
+   | 每个和搜索词无关的修饰词（最多算 10 个） | −1.5 |
+   | 生熟冲突（要熟的却是 raw / dry / flour，或反过来） | −20 |
+   | 组合菜（描述含 “with …”、“and …”，`with salt` 除外） | −8 / −8 |
+   | 低脂、减量版本（nonfat、low、light、reduced、skim…） | −12 |
+   | 通用条目（NFS、NS as to、no added fat、plain） | +4 |
+   | 不对路的条目（meatless、imitation、baby、restaurant、flour、juice、salad、soup、sauce、roll、deli、loaf、nugget…） | −25 |
+   | 品牌条目（全大写单词，如 DENNY'S；或含 USA） | −15 |
+   | 数据类型 Foundation / SR Legacy / FNDDS | +6 / +5 / +5 |
+   | 搜索结果排名 | −0.3 × 名次 |
+5. **缓存**：
+   - 缓存键是 `usdaQuery|foodCore`，命名空间改为 `usda-v2`。旧的 `usda` 缓存里存的是按旧规则选错的结果，不再使用。
+   - 默认 30 天；过期时尝试刷新，刷新失败继续用旧数据。
+6. 能量值按营养素编号 `2048` → `2047` → `1008` 的优先级读取，单位必须是 KCAL。同一查询在同一进程内并发时只请求一次。
+
+**验证**（2026-10-14）：
+- 用真实 USDA 数据测了 23 种常见食物，全部选对或正确地放弃。包括西兰花、马苏里拉、米饭、鹰嘴豆、三文鱼、鸡胸、牛奶、酸奶、苹果、土豆、意面、牛排，以及 USDA 里没有的 broccolini。
+- 用测试图片做了一次完整识别，11 种食物全部匹配正确。
+
+测试脚本不在仓库里。改匹配规则时，应该用同样的方法，拿真实 USDA 返回结果回归一遍：调用 `pickBestUsdaMatch(foods, { query, core })`，检查选中的描述里必须有哪些词、不能有哪些词。
 
 ### 9.3 后续优化方向
 
@@ -645,12 +706,14 @@ curl -X POST http://localhost:4174/api/analyze \
 
 前端：
 
-- 图片读取失败：弹窗提示。
-- 相机不可用或无权限：弹窗提示改用上传照片。
-- 模型调用失败：弹窗提示，并展示本地模拟结果。
+原版用浏览器弹窗（`alert`）提示；Next.js 版用页面内提示（见 5.2.5）。
+
+- 图片读取失败：提示换一张。
+- 相机不可用或无权限：提示改用上传照片。
+- 模型调用失败：提示失败原因，并展示示例结果。
 - 超过限额：原版同上；Next.js 版只提示恢复时间，不显示模拟结果。
 - 未登录或登录过期（仅 Next.js 版）：弹出登录框。
-- 读取、保存、清空云端记录失败（仅 Next.js 版）：弹窗显示 Supabase 返回的错误。
+- 读取、保存、清空云端记录失败（仅 Next.js 版）：提示 Supabase 返回的错误。
 - 无图片时分析：提示先拍照或上传照片。
 - 图片处理中或识别中：禁用分析按钮，避免重复提交。
 
@@ -755,13 +818,12 @@ GitHub Pages 只托管静态文件，没有 `server.js`，所以线上调用 `/a
 - Next.js 版：Google 登录、邮件登录链接、按账号限次。
 - Next.js 版：Supabase 云端历史（RLS）、旧本地记录导入、热量统计页。
 - Next.js 版：隐私政策和服务条款页面。
+- Next.js 版：USDA 匹配规则重写（核心词必须命中）、食物中英文名、界面中英文切换、页面内提示、识别进度、App 图标、AI 服务繁忙时自动重试。
 
 ### 16.2 下一阶段
 
-- 改进 USDA 匹配打分，修复错配问题。
-- 在 prompt 中统一食物名称语言。
-- 用页面内提示代替 `alert`，识别时显示进度。
-- PWA 图标。
+- 搜索引擎基础设置：`robots.txt`、站点地图、英文的标题和描述（建议定好产品名、买了域名之后再做 Search Console）。
+- 产品改名：App Store 上已经有好几款叫 “CalorieLens” 的 App。
 - 自定义域名 + 自定义 SMTP（比如 Resend），对所有用户开放邮箱登录，改回验证码。
 - App 内删除账号功能。
 - 增加蛋白质、脂肪、碳水估算。

@@ -13,8 +13,8 @@ function toMeal(row) {
   };
 }
 
-export function formatMealTime(eatenAt) {
-  return new Intl.DateTimeFormat("zh-CN", {
+export function formatMealTime(eatenAt, locale = "zh-CN") {
+  return new Intl.DateTimeFormat(locale, {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
